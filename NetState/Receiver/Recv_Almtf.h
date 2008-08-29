@@ -17,15 +17,9 @@
 //#define _LOG_BWJANELA
 //#define _LOG_CWND
 //#define _LOG_TIMEOUT
-#ifdef LEARNING
-#define _LOG_FAILURES
-#define FAIL_TIME 2000			// tempo x para considerar como uma falha (em ms) 
-#endif
 #ifdef NETSTATE
 #define _LOG_NETSTATE
-#ifndef LEARNING
-#define FAIL_TIME 10000			// tempo x para considerar como uma falha (em ms)
-#endif
+#define FAIL_TIME 10000			// Tempo x para considerar como uma falha (em ms).
 #endif
 #ifdef GRAPH_NETWORK
 #define _LOG_LAYERS
@@ -113,12 +107,15 @@ void GRAPH_getInfo(GRAPHInfo* i);
 #endif
 
 #ifdef NETSTATE
+
 typedef struct{
+	//Variáveis para guardar o estado da rede no momento de um join.
 	double Bwjanela;
 	double Bwmax;
 	double Cwnd;
-	struct timeval addTime;			// instante no qual as variáveis foram armazenadas.
-	bool falhou;					// true se ocorreu uma falha, false caso contrario.
+	struct timeval addTime;			//instante no qual as variáveis foram armazenadas.
+	bool falhou;					//true se ocorreu uma falha, false caso contrario.
+
 }NETSTATEvars;
 
 #define NUM_ELEM 3

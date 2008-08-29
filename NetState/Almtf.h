@@ -19,24 +19,14 @@
 //#define _WIN32_
 //#define _ALMTF_DEBUG
 //#define GRAPH_JAVAINTERFACE
-#define GRAPH_NETWORK
 #define _LOG_SPEED_AND_PACKETS
-#define SINCRONISMO_JOIN		// REFERENTE AO USO DO VETOR DE SINC_JOIN
-
-/* Definir somente um de cada vez (altera os valores do vetor) */
-#define SINCRONISMO_JOIN_1
-//#define SINCRONISMO_JOIN_2
-//#define SINCRONISMO_JOIN_3
-//#define SINCRONISMO_JOIN_4
-
-//#define TIME_SLOTS				// REFERENTE AO USO DE TIME SLOTS
-//#define LEARNING					// REFERENTE AO USO DE APRENDIZADO PELOS RECEPTORES
-#define NETSTATE					// REFERENTE AO USO DO ESTADO DA REDE NO MOMENTO DO JOIN
+#define SINCRONISMO_JOIN
+#define NETSTATE
 //#define _PACKETS_BUFFER
+#define GRAPH_NETWORK
 
-#define FL_INIRAJADA	0x80	// indicador de inicio de rajada (packet-pair ou packet-train)
-#define FL_MEDERTT		0x40	// indica que timestampOffset eh valido
-#define FL_ADDLAYER		0x20	// indica que pode subir para qualquer camada nesse slot
+#define FL_INIRAJADA	0x80  // indicador de inicio de rajada (packet-pair ou packet-train)
+#define FL_MEDERTT		0x40  // indica que timestampOffset eh valido
 
 //#define ALMTF_PACKETSIZE		500				// Tamanho do pacote em bytes [almtfsim.tcl]
 //#define ALMTF_PP				true			// true=com pares de pacotes; false=sem pares de pacotes
@@ -46,14 +36,6 @@
 //#define ALMTF_RTT				500				// RTT inicial em ms
 //#define ALMTF_DTSINC			1.0				// de quanto em quanto tempo receptores podem tentar join
 //#define ALMTF_EIMULTIPLIER	1
-
-#ifdef TIME_SLOTS
-
-#define TIME_SLOT 	100						// Time slot em ms
-#define N_ADD 		20*TIME_SLOT			// Minimum time slots before layer addition
-#define N_DROP 		20*TIME_SLOT			// Threshold for quick drop
-
-#endif
 
 /*
  * ALMTFLayer
