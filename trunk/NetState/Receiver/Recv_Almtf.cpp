@@ -7,11 +7,12 @@
  *                       Alberto Junior     <e-mail>
  *                       Athos Fontanari    <aalfontanari@inf.ufrgs.br>
  *                       João Victor Portal <e-mail>
+ * 						 Jonas Hartmann		<jonashartmann@inf.ufrgs.br>
  *                       Leonardo Daronco   <e-mail>
  *                       Valter Roesler     <e-mail>
  *
  *
- *     Recv_Almtf.cpp: Implementação do Algoritmo ALMTF versão Linux
+ *     Sender.cpp: Implementação do algoritmo ALMTF versão Windows/Linux.
  *
  */
 
@@ -48,24 +49,17 @@
 #ifdef _LOG_TIMEOUT
 	ofstream ofs_logTimeout;
 #endif
-#ifdef _LOG_FAILURES
-	ofstream ofs_logFailures;
-#endif
 #ifdef _LOG_NETSTATE
 	ofstream ofs_logNet;
 #endif
 #ifdef _LOG_LAYERS
 	ofstream ofs_logLayers;
 #endif
-
+	
 //Variável RTT utiizada em várias funções, mas alterada apenas na CalculaRTT
 struct timeval RTT;		// RTT em milisegundos
 int Numloss;			// número de perdas
 int Sincjoin_recv;		// variável para sincronismo de join dos receptores
-
-#ifdef TIME_SLOTS 
-bool ts_add;			// true quando é o time slot de subida e false quando não é
-#endif
 
 //Cálculo do RTT: Variáveis utilizadas apenas no cálculo do RTT: Apenas 1 thread tem acesso
 bool FiltraRTT;
@@ -75,18 +69,9 @@ long IntFeedback;
 struct timeval t_vinda;
 struct timeval t_assim;
 
-/* Variaveis utilizadas na tecnica de Aprendizado do Receptor */
-#ifdef LEARNING
-int t_stab_mult = 1;			// Multiplicador do T_STAB
-int join_failures = 0;			// Numero de falhas de join realizadas
-struct timeval t_failure;
-#endif
-
 #ifdef NETSTATE
-#ifndef LEARNING
 int join_failures = 0;
 struct timeval t_failure;
-#endif
 
 int posAtual;			// indica a posição a ser inserido o elemento na lista de estados.
 typedef vector< vector<NETSTATEvars> > NETSTATElist;
@@ -222,11 +207,6 @@ void ALMTF_init()
 	ofs_logCwnd.setf(ios::fixed, ios::floatfield);
 	ofs_logCwnd.precision(2);
 #endif
-#ifdef _LOG_FAILURES
-	ofs_logFailures.open("LOG_Failures.txt");
-	ofs_logFailures.setf(ios::fixed, ios::floatfield);
-	ofs_logFailures.precision(2);
-#endif
 #ifdef _LOG_NETSTATE
 	ofs_logNet.open("LOG_Netstate.txt");
 	ofs_logNet.setf(ios::fixed, ios::floatfield);
@@ -244,8 +224,8 @@ void ALMTF_init()
 	// Tempo para controle dos efeitos colaterais de subida de camada em outros receptores (? conferir)
 	// Tempo que deve ser esperado em addLayer para se cadastrar em uma nova camada
 	double Cwnd;				// tamanho da janela
-	double Bweq;				// Banda máxima pela equação				// verificar o tipo de dado
-	double Bwjanela;		// Banda controlada por Bwmax e Bweq		// verificar o tipo de dado
+	double Bweq;				// Banda máxima pela equação				// TODO verificar o tipo de dado
+	double Bwjanela;		// Banda controlada por Bwmax e Bweq		// TODO verificar o tipo de dado
 	t_vinda.tv_sec = 0;
 	t_vinda.tv_usec = 0;
 	t_assim.tv_sec = 0;
@@ -297,14 +277,18 @@ void ALMTF_init()
 	//Time_stab = espera um RTT com cwnd em "1", tal qual o TCP.
 	
 #ifdef NETSTATE
+	// Ajusta o tamanho da matriz e inicializa os elementos.
 	netList.resize(core_getTotalLayers());
-	for (int i = 0; i < netList.size();i++)
+	for (int i = 0; i < netList.size();i++){		
 		netList[i].resize(NUM_ELEM);
+		for (int j = 0; j < NUM_ELEM; j++)
+			init_netvars(&netList[i][j]);
+	}	
 #ifdef _LOG_NETSTATE	
 	ofs_logNet << "netList.size() = " << netList.size() << endl;
 #endif	
-#endif	
-	
+#endif
+		
 #ifdef _LOG_BW
 	// thread pra fazer o log de Bwjanela, bweq e bwmax
 	if (pthread_create(&IDThread_logBw, NULL, ALMTF_threadLogBw, (void *)NULL) != 0) {
@@ -366,16 +350,10 @@ void ALMTF_init()
 		ofs_logBwjanela << "Now: " << time_getnow_sec() <<","<< time_getnow_usec() <<"us"<< endl;
 		ofs_logBwjanela << "Inicial Bwjanela=" << Bwjanela << endl;
 #endif
-#ifdef _LOG_FAILURES
-		/*
-		ofs_logFailures << "========== Inicio ALMTF_EI(): ==========" << endl << endl;		
-		ofs_logFailures << "Inicial join_failures = " << join_failures << endl;
-		*/
-#endif
 		ALMTF_EI(&TimeEI,&Cwnd,&Bwjanela,&Bweq,&Ep,&ALM_state);
 #ifdef GRAPH_JAVAINTERFACE
 		Info.Bweq = Bweq;
-		Info.Bwjanela = Bwjanela;		
+		Info.Bwjanela = Bwjanela;
 #endif	
 #ifdef _LOG_EI
 		ofs_logEI << "Cwnd\t" << Cwnd << "\t";
@@ -392,12 +370,6 @@ void ALMTF_init()
 #ifdef _LOG_BWJANELA
 		ofs_logBwjanela << "Final Bwjanela=" << Bwjanela << endl;
 		ofs_logBwjanela << "========== Fim ALMTF_EI(): ==========" << endl;		
-#endif		
-#ifdef _LOG_FAILURES
-		/*
-		ofs_logFailures << "Final join_failures = " << join_failures << endl << endl;
-		ofs_logFailures << "========== Fim ALMTF_EI():    ==========" << endl;
-		*/	
 #endif
 		Twait.tv_sec=0;
 		Twait.tv_usec=0;
@@ -438,9 +410,6 @@ void ALMTF_init()
 #ifdef _LOG_TIMEOUT
 	ofs_logTimeout.close();
 #endif
-#ifdef _LOG_FAILURES
-	ofs_logFailures.close();
-#endif
 #ifdef _LOG_NETSTATE
 	ofs_logNet.close();
 #endif
@@ -461,7 +430,7 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 	logSS << _timenow.tv_sec << "," << _b << "\t ";
 	logSS << core_getActualLayer() << endl;
 	ofs_logLayers << logSS.str();
-#endif		
+#endif
 	// tempo de início do algoritmo
 	struct timeval tstart;
 	time_getus(&tstart);
@@ -665,66 +634,31 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 			ofs_log << "\t Bwjanela = "<<*Bwjanela<<"\t Bwup = "<<bwup<<endl;;
 #endif
 	// TRATA SUBIR CAMADA
-	if (*Bwjanela > bwup) {
-#ifdef SINCRONISMO_JOIN
-		if (Sincjoin_recv > core_getActualLayer() || *ALM_state == ALM_STATE_START)
-#else			
-#ifdef TIME_SLOTS
-		if (ts_add	|| *ALM_state == ALM_STATE_START)
-			//ts_add = false; // pode adicionar quantas camadas quiser???
-#else
-#ifdef LEARNING
-		if (*ALM_state == ALM_STATE_START || true)
-			// Ele sempre vai tentar subir de camada, não interessa qual o estado dele.
-#else 
-		if (*ALM_state == ALM_STATE_START || true)
-#endif
-#endif
-#endif
-		{	
+	if (*Bwjanela > bwup) {		
+		if (Sincjoin_recv > core_getActualLayer() || *ALM_state == ALM_STATE_START) {
 #ifdef _LOG_LOG
 			ofs_log << "if (Sincjoin_recv > core_getActualLayer() || *ALM_state == ALM_STATE_START)" << endl;
 			ofs_log << "Sincjoin = " << Sincjoin_recv << "\tCamada Atual = " << core_getActualLayer() << endl;
 #endif
 #ifdef NETSTATE
 			NETSTATEvars netVars;
+			save_netvars(&netVars,*Bwjanela,Bwmax,*Cwnd);
+			/*
 			netVars.Bwjanela = *Bwjanela;
 			netVars.Bwmax = Bwmax;
 			netVars.Cwnd = *Cwnd;
+			*/
 #endif
-			int r = ALMTF_addLayer(Bwjanela, &TimeEI->AddLayerWait, Cwnd);			
-			if (r == 1) {
-				// Subiu de camada
+			int r = ALMTF_addLayer(Bwjanela, &TimeEI->AddLayerWait, Cwnd);
+			if (r == 1) {		
 #ifdef _LOG_LOG
 				ofs_log << "Camada Adicionada = " << core_getActualLayer() << endl;
 #endif
-#ifdef SINCRONISMO_JOIN
 				Sincjoin_recv = 0;
-#endif
-#ifdef LEARNING
-				time_getus(&t_failure);
-#ifdef _LOG_FAILURES
-				ofs_logFailures << "Subiu de camada!" << endl;
-				char auxb[20];
-				memset(auxb, 0,sizeof(auxb));				
-				sprintf(auxb, "%.6d", (int)t_failure.tv_usec);	
-				ofs_logFailures << "Tempo atual =              \t" << t_failure.tv_sec << "," << auxb << endl;
-#endif
-				time_add_ms(&t_failure, FAIL_TIME, &t_failure);
-				// Tempo atual + x segundos
-				// Se descer de camada x segundos apos a subida, considera como uma falha
-#ifdef _LOG_FAILURES				
-				memset(auxb, 0,sizeof(auxb));				
-				sprintf(auxb, "%.6d", (int)t_failure.tv_usec);
-				ofs_logFailures << "Tempo atual + 2 segundos = \t" << t_failure.tv_sec << "," << auxb << endl;
-				ofs_logFailures << endl;
-#endif				 
-#endif		
 #ifdef NETSTATE
-#ifndef LEARNING
 				time_getus(&t_failure);
-				netVars.addTime = t_failure;
-				netVars.falhou = false;
+				netVars.addTime = t_failure;	//Guarda o tempo em que subiu de camada.
+				netVars.falhou = false;			//Seta como false, pois pode não falhar.
 				netList[core_getActualLayer()][posAtual] = netVars;
 				posAtual++;
 				if (posAtual == NUM_ELEM)
@@ -747,10 +681,8 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 				ofs_logNet << endl;
 #endif
 #endif
-#endif
 			} else 
-				if (r == -1) {		
-					// Não subiu de camada					
+				if (r == -1) {
 					*Cwnd = cwndant;
 #ifdef _LOG_LOG
 					ofs_log << "Camada NAO Adicionada = " << "Cwnd = " << *Cwnd << endl;
@@ -802,31 +734,9 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 		logSS << _timenow.tv_sec << "," << _b << "\t ";
 		logSS << core_getActualLayer() << endl;
 		ofs_logLayers << logSS.str();
-#endif		
-#ifdef LEARNING
-		struct timeval timenow;
-		time_getus(&timenow);
-#ifdef _LOG_FAILURES		
-		ofs_logFailures << "Desceu de camada!" << endl;
-		memset(b, 0,sizeof(b));				
-		sprintf(b, "%.6d", (int)timenow.tv_usec);
-		ofs_logFailures << "Tempo Atual = \t" << timenow.tv_sec << "," << b << "\t" << endl;		
-#endif
-		// Se esta deixando camada antes do tempo estipulado
-		// considera como sendo uma perda
-		if (time_compare(&t_failure,&timenow) > 0){
-			join_failures++;
-#ifdef _LOG_FAILURES
-			ofs_logFailures << "timenow < t_failure !! Falhou na tentativa de join!!" << "\t" << endl;			
-#endif
-		}
-#ifdef _LOG_FAILURES
-		ofs_logFailures << "join_failures = " << join_failures << "\t" << endl;		
-#endif
 #endif
 #ifdef NETSTATE
-#ifndef LEARNING
-		struct timeval timenow;
+		struct timeval timenow;		
 		time_getus(&timenow);
 #ifdef _LOG_NETSTATE
 		ofs_logNet << "Desceu de camada!" << endl;
@@ -839,7 +749,7 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 		if (time_compare(&t_failure,&timenow) > 0){
 #ifdef _LOG_NETSTATE
 			ofs_logNet << "timenow < t_failure !! Falhou na tentativa de join!!" << "\t" << endl;			
-#endif		
+#endif
 			join_failures++;
 			if (posAtual > 0)
 				netList[core_getActualLayer()+1][posAtual-1].falhou = true;
@@ -847,9 +757,8 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 			// NUM_ELEM-1 é igual ao último elemento.
 #ifdef _LOG_NETSTATE
 			ofs_logNet << "Salvou o estado atual da rede!\t" << endl << endl;			
-#endif		
-		}		
 #endif
+		}
 #endif
 #ifdef _LOG_LOG
 		ofs_log << "\t DEIXOU A CAMADA! "<<core_getActualLayer()+1<<endl;
@@ -1063,7 +972,7 @@ double ALMTF_estimabanda(struct timeval timestamp, double *Bweq, ALMTFLossEvent 
 		if (dbRTT == 0.0)
 			banda = (*Bweq) + (ALMTF_PACKETSIZE*0.8/(0.000001*1000));
 		else
-			banda = (*Bweq) + (ALMTF_PACKETSIZE*0.8/(dbRTT*1000)); // BLAH  se RTT == 0 ????
+			banda = (*Bweq) + (ALMTF_PACKETSIZE*0.8/(dbRTT*1000)); // BLAH TODO se RTT == 0 ????
 	}
 	if (banda > Bwmax && Bwmax > 0)
 		banda = Bwmax;
@@ -1270,9 +1179,10 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 		return -1;									   //timenow < Time_addLayerWait
 
 #ifdef NETSTATE
-	if ((core_getActualLayer() < core_getTotalLayers()-1) && (join_failures > 3)){
+	if ((core_getActualLayer() < core_getTotalLayers()-1) && (join_failures > NUM_ELEM)){		
 		for (int k = 0 ; k < NUM_ELEM; k++){
 			if (netList[core_getActualLayer()+1][k].falhou == true){
+				//Só compara os estados se o estado guardado é de uma falha.
 				double failbw = netList[core_getActualLayer()+1][k].Bwjanela;
 				double failbwmax = netList[core_getActualLayer()+1][k].Bwmax;
 				double failcwnd = netList[core_getActualLayer()+1][k].Cwnd;
@@ -1294,7 +1204,7 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 				if (   ((failbw*0.95 < *novabw) && (*novabw < failbw*1.05))
 					&& ((failbwmax*0.95 < Bwmax) && (Bwmax < failbwmax*1.05))
 					/*&& ((failcwnd*0.90 < *Cwnd) && (*Cwnd < failcwnd*1.10))*/		)			
-				{
+				{	
 #ifdef _LOG_NETSTATE
 					ofs_logNet << "Estado atual parecido com um de falha!\t Não vai subir!" << endl << endl;
 #endif
@@ -1302,7 +1212,7 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 				}
 #ifdef _LOG_NETSTATE
 			ofs_logNet << "Estado atual diferente!" << endl << endl;
-#endif	
+#endif
 			}
 		}
 #ifdef _LOG_NETSTATE
@@ -1370,30 +1280,10 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 			*Cwnd = ALMTF_rate2win(novabw, Cwnd);
 		}
 	}
-	*Time_addLayerWait = timenow;	
-#ifdef LEARNING	
-	// se teve 3 falhas ao subir
-	if (join_failures >= 3){
-#ifdef _LOG_FAILURES
-		ofs_logFailures << "***************************" << endl;
-		ofs_logFailures << "*****  Teve 3 Falhas!! ****" << endl;
-		ofs_logFailures << "***************************" << endl;
-#endif
-		join_failures = 0;
-		// incrementa o multiplicador do tempo de estabilização
-		if (t_stab_mult < 6) // mas não para mais que 6
-			t_stab_mult++;
-#ifdef _LOG_FAILURES
-		ofs_logFailures << "Multiplicador = " << t_stab_mult << endl;
-#endif
-	}
-	time_add_ms(Time_addLayerWait, ALMTF_T_STAB*t_stab_mult, Time_addLayerWait);
-#else
+	*Time_addLayerWait = timenow;
 	time_add_ms(Time_addLayerWait, ALMTF_T_STAB, Time_addLayerWait);
 	//Time_addLayerWait=timenow + ALMTF_T_STAB=Evita subir duas camadas menos de Time_stab
-#endif
 	return 1;
-
 
 }
 
@@ -1404,7 +1294,7 @@ struct timeval ALMTF_calculaRTT (long lseqno, transm_packet* pkt, struct timeval
 	rtt_medido.tv_sec = 0;
 	rtt_medido.tv_usec = 0;
 	hdr_almtf* almtf_h = &(pkt->header);	
-	// se é o primeiro pacote recebido na camada, envia msg para o transmissor e ignora o cálculo de RTT
+	// se é o primeiro pacote recebido na camada, envia msg para o transmissor e ignora todo cálculo de RTT
 	if (lseqno == -1) {			
 		ALMTF_sendPkt();
 		time_div(&ctpRTT, 2.0, &t_vinda);
@@ -1470,7 +1360,7 @@ struct timeval ALMTF_calculaRTT (long lseqno, transm_packet* pkt, struct timeval
 			//		RTT = rtt_medido;	
 		} else {
 			time_mul(&t_vinda, 2.0, &ctpRTT);
-			//RTT = 2 * t_vinda; // supoe link simetrico na primeira vez //  t_vinda = RTT/2 ali em cima .. entõa aqui o RTT deve continuar mesma coisa, nem precisa esse código
+			//RTT = 2 * t_vinda; // supoe link simetrico na primeira vez // TODO t_vinda = RTT/2 ali em cima .. entõa aqui o RTT deve continuar mesma coisa, nem precisa esse código
 			FiltraRTT = true; // todas outras medidas utiliza o filtro para deixar mais estavel
 		}		
 		//////// Fim do calculo de RTT /////////
@@ -1517,16 +1407,10 @@ void ALMTF_recvPkt(ALMTFRecLayer *layer, transm_packet* pkt, struct timeval *tim
 {
 	hdr_almtf* almtf_h = &(pkt->header);
 	if (layer->layerID == 0) 
-	{	
-#ifdef TIME_SLOT
-		if (almtf_h->flagsALMTF & FL_ADDLAYER)
-			ts_add = true;
-		else ts_add = false;
-#endif
+	{		
 #ifdef SINCRONISMO_JOIN
 		if (almtf_h->sincjoin > (unsigned)Sincjoin_recv)
 			Sincjoin_recv = almtf_h->sincjoin;
-
 #else
 		Sincjoin_recv = 100;
 #endif
