@@ -30,7 +30,7 @@ ofstream ofs_logCoreStatus;
 deque<ALMTFRecLayer> LayerList;	// lista de camadas .. a primeira camada criada fica no início da lista
 int TotalLayers = 0;								// número de camadas lidas do arquivo
 int *RatesCum;									// vetor de taxas cumulativas das camadas
-int ActualLayer = 0;							// camada atual
+int CurrentLayer = 0;							// camada atual
 int LogTime = LOG_TIME_LIMIT;			// tempo de gravação do log
 int LogStep = LOG_TIME_STEP;			// intervalo de gravação do log
 
@@ -108,7 +108,7 @@ void core_init()
 		}
 	}
 	// inicia sem estar registrado em nenhuma camada
-	ActualLayer = -1;
+	CurrentLayer = -1;
 #ifdef _LOG_SPEED_AND_PACKETS
 	// inicia o processo de log
 	if (pthread_create(&IDthreadlogsp, NULL, core_logSaveResultsThread, (void *)NULL) != 0) {
@@ -180,9 +180,9 @@ bool core_readConfigs()
 void core_addLayer()
 {
 	stringstream sslist("");
-	if (ActualLayer < TotalLayers-1) { 
+	if (CurrentLayer < TotalLayers-1) { 
 		// cria a thread e habilita a execução dela
-		ALMTFRecLayer *layer = &LayerList.at(ActualLayer+1);
+		ALMTFRecLayer *layer = &LayerList.at(CurrentLayer+1);
 		if (!layer->thread_enabled) {
 			// cria a thread esperando os pacotes
 			layer->thread_enabled = true;
@@ -194,17 +194,17 @@ void core_addLayer()
 				cerr << "Error Creating Thread: core_recvThread!" << endl;
 			}
 #endif
-			ActualLayer++;
+			CurrentLayer++;
 			sslist << "-------------------------------------------------------"<<endl;
-			sslist << "Cadastrou na camada "<<ActualLayer<<" ("<<layer->speed<<" kbits/s)!";
+			sslist << "Cadastrou na camada "<<CurrentLayer<<" ("<<layer->speed<<" kbits/s)!";
 			sslist << " -> total: ";
-			sslist << RatesCum[ActualLayer];
+			sslist << RatesCum[CurrentLayer];
 			sslist <<" kbits/s"<<endl;
-			if (ActualLayer < TotalLayers-1)
-				sslist <<"\t\t- para a proxima camada: "<<RatesCum[ActualLayer+1]<<" kbits/s"<<endl;
+			if (CurrentLayer < TotalLayers-1)
+				sslist <<"\t\t- para a proxima camada: "<<RatesCum[CurrentLayer+1]<<" kbits/s"<<endl;
 			sslist << "-------------------------------------------------------"<<endl;
 		} else {
-			sslist << "Tentou se cadastrar na camada " << ActualLayer+1 << " mas já está cadastrado!" << endl;
+			sslist << "Tentou se cadastrar na camada " << CurrentLayer+1 << " mas já está cadastrado!" << endl;
 		}
 		recv_printlist.push_back(sslist.str());	
 	}
@@ -213,22 +213,22 @@ void core_addLayer()
 void core_leaveLayer()
 {	
 	stringstream sslist("");
-	if (ActualLayer >= 0) {
+	if (CurrentLayer >= 0) {
 		// desabilita a thread para ela encerrar sua execução
-		ALMTFRecLayer *layer = &LayerList.at(ActualLayer);
+		ALMTFRecLayer *layer = &LayerList.at(CurrentLayer);
 		layer->thread_enabled = false;
-		ActualLayer--;
+		CurrentLayer--;
 		sslist << "-------------------------------------------------------"<<endl;
-		sslist << "Deixou a camada "<<(ActualLayer+1)<<" ("<<layer->speed<<" kbits/s)!";
+		sslist << "Deixou a camada "<<(CurrentLayer+1)<<" ("<<layer->speed<<" kbits/s)!";
 		sslist << " -> total: ";
-		if (ActualLayer != -1)
-			sslist <<RatesCum[ActualLayer];
+		if (CurrentLayer != -1)
+			sslist <<RatesCum[CurrentLayer];
 		else
 			sslist << "0";
 		sslist <<" kbits/s"<<endl;
 		sslist << "-------------------------------------------------------"<<endl;
 	} else 
-		sslist << "Receptor: não é possível deixar a camada "<<ActualLayer<<endl;
+		sslist << "Receptor: não é possível deixar a camada "<<CurrentLayer<<endl;
 	recv_printlist.push_back(sslist.str());
 }
 
@@ -480,14 +480,14 @@ int core_getRatesCum(int layer)
 	return RatesCum[layer];
 }
 
-int core_getRatesCumActual()
+int core_getRatesCumCurrent()
 {	
-	return RatesCum[ActualLayer];
+	return RatesCum[CurrentLayer];
 }
 
-int core_getActualLayer()
+int core_getCurrentLayer()
 {
-	return ActualLayer;
+	return CurrentLayer;
 }
 
 int core_getTotalLayers()
