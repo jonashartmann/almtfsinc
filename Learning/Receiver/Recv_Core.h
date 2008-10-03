@@ -5,7 +5,7 @@
 #include <iostream>
 #include <sstream>
 #include <deque>
-
+#include <vector>
 
 #include "../Almtf.h"
 #include "Recv_Almtf.h"
@@ -81,13 +81,13 @@ int core_getLogStep();
 
 void core_setLogStep(int value);
 
-int core_getRatesCumActual();
+int core_getRatesCumCurrent();
 
 int core_getRatesCum(int layer);
 
 int core_getTotalLayers();
 
-int core_getActualLayer();
+int core_getCurrentLayer();
 
 void core_getLastPktTime(struct timeval *t);
 

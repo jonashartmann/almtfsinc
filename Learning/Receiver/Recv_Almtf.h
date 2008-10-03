@@ -9,21 +9,27 @@
 
 //#define _LOG_BWMAX
 //#define _LOG_EP
-#define _LOG_NUMLOSS
+//#define _LOG_NUMLOSS
 #define _LOG_LOG
 //#define _LOG_RECV_TESTE
-#define _LOG_BW
-#define _LOG_EI
-#define _LOG_BWJANELA
-#define _LOG_CWND
-#define _LOG_TIMEOUT
+//#define _LOG_BW
+//#define _LOG_EI
+//#define _LOG_BWJANELA
+//#define _LOG_CWND
+//#define _LOG_TIMEOUT
+#ifdef NETSTATE
+#define _LOG_NETSTATE
+#define FAIL_TIME 10000			// Tempo x para considerar como uma falha (em ms).
+#endif
 #ifdef LEARNING
 #define _LOG_FAILURES
-//#define FAIL_TIME 10000			// tempo x para considerar como uma falha (em ms)
-//#define MULT_LIMIT 120			// limite que o multiplicador pode atingir
 #endif
 #ifdef GRAPH_NETWORK
 #define _LOG_LAYERS
+#endif
+
+#ifdef READ_CONFIG
+#define FILENAME_LEARNING "inconfig.txt"
 #endif
 
 #define round(x) (x<0?ceil((x)-0.5):floor((x)+0.5))
@@ -107,9 +113,31 @@ void GRAPH_getInfo(GRAPHInfo* i);
 
 #endif
 
+#ifdef NETSTATE
+
+typedef struct{
+	//Variáveis para guardar o estado da rede no momento de um join.
+	double Bwjanela;
+	double Bwmax;
+	double Cwnd;
+	struct timeval expireTime;			//instante no qual as variáveis foram armazenadas.
+	bool falhou;					//true se ocorreu uma falha, false caso contrario.
+
+}NETSTATEvars;
+
+#define NUM_ELEM 3					// Número de elementos da lista de falhas de cada camada
+
+void init_netvars(NETSTATEvars *net);
+void save_netvars(NETSTATEvars *net, double Bwjanela, double Bwmax, double Cwnd);
+
+#endif
+
 bool ALMTF_setIP(char* IP);
 
 unsigned int ALMTF_getIP(char* IP);
 
+#ifdef READ_CONFIG
+void learning_init();
+#endif
 
 #endif /*RECV_ALMTF_H_*/

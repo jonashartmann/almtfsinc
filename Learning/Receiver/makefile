@@ -9,7 +9,7 @@ CFLAGS = -c $(DEBUG)
 LIBS=../Lib
 LTSCI2=-ltsci2
 LFLAGS = -L$(LIBS) -lpthread $(LTSCI2) -lm -lrt $(DEBUG)
-EXTRA_CFLAGS = -DALMTF_PACKETSIZE=1000 -DALMTF_PP=true -DALMTF_PP_BURST_LENGTH=2 -DALMTF_T_STAB=1000 -DALMTF_WINDOWSIZE=60.0 -DALMTF_RTT=500 -DALMTF_DTSINC=1.0 -DALMTF_EIMULTIPLIER=1 -DMULT_INC=3 -DMULT_LIMIT=120 -DFAIL_TIME=10000 -DRTT_TESTES_CONSTANTE=10#Constantes ALMTF
+EXTRA_CFLAGS = -DALMTF_PACKETSIZE=1000 -DALMTF_PP=true -DALMTF_PP_BURST_LENGTH=2 -DALMTF_T_STAB=1000 -DALMTF_WINDOWSIZE=60.0 -DALMTF_RTT=500 -DALMTF_DTSINC=1.0 -DALMTF_EIMULTIPLIER=1 -DLEARNING -DREAD_CONFIG -DRTT_TESTES_CONSTANTE=10#Constantes ALMTF
 TFLAGS = -D_TSCI2_
 
 # All Target
@@ -22,7 +22,8 @@ Receiver: $(OBJS)
 	  @rm -rf bin
 	  @mkdir bin
 	  @mv Receiver bin/
-	  @cp ../inalm.txt bin/  
+	  @cp ../inalm.txt bin/
+	  @cp ../inconfig.txt bin/  
 	  @rm *.o
 
 Recv_Almtf.o: Recv_Almtf.h Recv_Almtf.cpp Recv_Core.h $(ALMTF_H_PATH)Almtf.h $(UTILS_PATH)Utils.h $(UTILS_PATH)Socket_Utils.h  

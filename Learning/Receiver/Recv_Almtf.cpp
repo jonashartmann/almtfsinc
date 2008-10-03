@@ -9,6 +9,8 @@
  *                       João Victor Portal <e-mail>
  *                       Leonardo Daronco   <e-mail>
  *                       Valter Roesler     <e-mail>
+ *                       Felipe Freitag Vargas <ffvargas@inf.ufrgs.br>     
+ *						 Jonas Hartmann <jonasharty@gmail.com>
  *
  *
  *     Recv_Almtf.cpp: Implementação do Algoritmo ALMTF versão Linux
@@ -48,6 +50,9 @@
 #ifdef _LOG_TIMEOUT
 	ofstream ofs_logTimeout;
 #endif
+#ifdef _LOG_NETSTATE
+	ofstream ofs_logNet;
+#endif
 #ifdef _LOG_FAILURES
 	ofstream ofs_logFailures;
 #endif
@@ -59,7 +64,6 @@
 struct timeval RTT;		// RTT em milisegundos
 int Numloss;			// número de perdas
 int Sincjoin_recv;		// variável para sincronismo de join dos receptores
-bool ts_add;			// true quando é o time slot de subida e false quando não é
 
 //Cálculo do RTT: Variáveis utilizadas apenas no cálculo do RTT: Apenas 1 thread tem acesso
 bool FiltraRTT;
@@ -71,9 +75,37 @@ struct timeval t_assim;
 
 /* Variaveis utilizadas na tecnica de Aprendizado do Receptor */
 #ifdef LEARNING
+static int fail_time;			// tempo x para considerar como uma falha (em ms)
+static int mult_limit;			// limite que o multiplicador pode atingir
+static int mult_inc;			// incrementador do multiplicador
 int t_stab_mult = 1;			// Multiplicador do T_STAB
 int join_failures = 0;			// Numero de falhas de join realizadas
 struct timeval t_failure;
+int stable_layer = 0;
+// Abaixo são declarações só para nao dar conflito com o NETSTATE
+int storage_time;			// tempo máximo de armazenamento de um estado de falha.
+double similarity;			// porcentagem de semelhança
+#endif
+#ifdef NETSTATE
+static int fail_time;			// tempo x para considerar como uma falha (em ms)
+int join_failures = 0;
+struct timeval t_failure;
+static int storage_time;		// tempo máximo de armazenamento de um estado de falha.
+static double similarity;		// porcentagem de semelhança
+
+int posAtual;			// indica a posição a ser inserido o elemento na lista de estados.
+typedef vector< vector<NETSTATEvars> > NETSTATElist;
+
+/* Lista para guardar os variados estados da rede.
+ * Quando um receptor sobe para a camada i,
+ * ele guarda o estado da rede na posição i da lista.
+ */
+NETSTATElist netList;
+
+// Abaixo são declarações so para nao dar conflito com o LEARNING
+static int mult_limit;			// limite que o multiplicador pode atingir
+static int mult_inc;			// incrementador do multiplicador
+int stable_layer = 0;
 #endif
 
 //Cálculo da Banda Máxima: alterado apenas na thread que realiza o cálculo
@@ -104,7 +136,7 @@ void log_printAll(ALMstate *ALM_state, double *Bwjanela, double *Bweq, double *C
 	ss << "\t Bwjanela = " << *Bwjanela <<endl;
 	ss << "\t Bweq = " << *Bweq <<endl;
 	ss << "\t Cwnd = " << *Cwnd <<endl;
-	unsigned int bwatual = core_getRatesCumActual();
+	unsigned int bwatual = core_getRatesCumCurrent();
 	ss << "\t Bwatual = "<<bwatual<<endl;
 	double dbRTT;
 	struct timeval tpRTT = ALMTF_getRTT();
@@ -144,7 +176,7 @@ void *ALMTF_threadLogBw(void *)
 			memset(b, 0, sizeof(b));			
 			sprintf(b, "%.6d", btmp);			
 			ofs_logBw << now.tv_sec << "," << b;
-			unsigned int Bwatual = core_getRatesCumActual();
+			unsigned int Bwatual = core_getRatesCumCurrent();
 			ofs_logBw<<"\tBwmax = "<<Bwmax<<"\tBwatual = "<<Bwatual<<"\tRTT = "<<dbRTT<<"\tNumloss = "<<ALMTF_getNumloss()<<endl;
 			next.tv_usec += 200000;
 			if (next.tv_usec > 1000000) {
@@ -199,6 +231,11 @@ void ALMTF_init()
 	ofs_logCwnd.setf(ios::fixed, ios::floatfield);
 	ofs_logCwnd.precision(2);
 #endif
+#ifdef _LOG_NETSTATE
+	ofs_logNet.open("LOG_Netstate.txt");
+	ofs_logNet.setf(ios::fixed, ios::floatfield);
+	ofs_logNet.precision(2);
+#endif
 #ifdef _LOG_FAILURES
 	ofs_logFailures.open("LOG_Failures.txt");
 	ofs_logFailures.setf(ios::fixed, ios::floatfield);
@@ -216,20 +253,21 @@ void ALMTF_init()
 	// Tempo para controle dos efeitos colaterais de subida de camada em outros receptores (? conferir)
 	// Tempo que deve ser esperado em addLayer para se cadastrar em uma nova camada
 	double Cwnd;				// tamanho da janela
-	double Bweq;				// Banda máxima pela equação				// verificar o tipo de dado
-	double Bwjanela;		// Banda controlada por Bwmax e Bweq		// verificar o tipo de dado
+	double Bweq;				// Banda máxima pela equação				// TODO verificar o tipo de dado
+	double Bwjanela;		// Banda controlada por Bwmax e Bweq		// TODO verificar o tipo de dado
 	t_vinda.tv_sec = 0;
 	t_vinda.tv_usec = 0;
 	t_assim.tv_sec = 0;
 	t_assim.tv_usec = 0;
 	Cwnd = 1.0;		// Decisão de implementação: manter cwnd em pacotes e começando em "1"
-    Bwjanela = 0;	// Valor qualquer menor que taxa da primeira camada
-    ALM_state = ALM_STATE_START; 
+    	Bwjanela = 0;	// Valor qualquer menor que taxa da primeira camada
+    	ALM_state = ALM_STATE_START; 
 	if (ALMTF_PP == true) { // Com pares de pacotes
 		Bwmax = 0.0;
-    } else {		
+    	} else {		
 		Bwmax = 10000000; // coloca valor alto para nao mexer muito no codigo ??
-    }
+		//Bwmax = 3000; // teste
+    	}
 	ReceptorIP = new char[16];
 	bzero(ReceptorIP, sizeof(ReceptorIP));
 	ALMTF_setIP(ReceptorIP);
@@ -245,12 +283,12 @@ void ALMTF_init()
 	Sincjoin_recv = 0;
 	RTT.tv_sec = 0;
 	RTT.tv_usec = ALMTF_RTT*1000;
-    Numrec = 0;
-    FiltraRTT = false; // avisa que eh a primeirissima medida de RTT e deve atribuir RTT e nao filtrar
-    // Inicializa ALMTF_eqn, responsavel por determinar bunsigned int Bwatual = core_getRatesCumActual();anda via equacao do TCP
-    ALMTFLossEvent Ep;	
+    	Numrec = 0;
+    	FiltraRTT = false; // avisa que eh a primeirissima medida de RTT e deve atribuir RTT e nao filtrar
+    	// Inicializa ALMTF_eqn, responsavel por determinar bunsigned int Bwatual = core_getRatesCumCurrent();anda via equacao do TCP
+    	ALMTFLossEvent Ep;	
 	ALMTF_inicializa_eqn(&Ep);
-    Bweq = 1000.0;	// valor inicial para funcionar o start-state
+	Bweq = 1000.0;	// valor inicial para funcionar o start-state
 	core_addLayer(); // se registra na primeira camada
 	if (pthread_create(&IDThread_Bwmax, NULL, ALMTF_calcbwmax, (void *)NULL) != 0) {
 		cerr << "Error Creating Thread!" << endl;	
@@ -267,6 +305,20 @@ void ALMTF_init()
 	struct timeval tpRTT = ALMTF_getRTT();
 	time_add(&TimeEI.Stab, &tpRTT, &TimeEI.Stab);
 	//Time_stab = espera um RTT com cwnd em "1", tal qual o TCP.
+	
+#ifdef NETSTATE
+	// Ajusta o tamanho da matriz e inicializa os elementos.
+	netList.resize(core_getTotalLayers());
+	for (int i = 0; i < netList.size();i++){		
+		netList[i].resize(NUM_ELEM);
+		for (int j = 0; j < NUM_ELEM; j++)
+			init_netvars(&netList[i][j]);
+	}	
+#ifdef _LOG_NETSTATE	
+	ofs_logNet << "netList.size() = " << netList.size() << endl;
+#endif	
+#endif
+	
 #ifdef _LOG_BW
 	// thread pra fazer o log de Bwjanela, bweq e bwmax
 	if (pthread_create(&IDThread_logBw, NULL, ALMTF_threadLogBw, (void *)NULL) != 0) {
@@ -283,12 +335,12 @@ void ALMTF_init()
 	log_ss << "===========================================================================================================================================" << endl;	
 	log_ss << "============================================================  Valores Iniciais ============================================================" << endl;
 	log_ss << "Tempo\t" << log_time_now.tv_sec << "," << b << "\t";
-	unsigned int Bwatual = core_getRatesCumActual();
+	unsigned int Bwatual = core_getRatesCumCurrent();
 	log_ss << "Bwatual\t" << Bwatual << "\t";
 	memset(b, 0,sizeof(b));
 	sprintf(b, "%.6d", (int)RTT.tv_usec);
 	log_ss << "RTT\t" << RTT.tv_sec << "," << b << "\t";
-	log_ss << "Bweq\t" << Bweq << "\t";
+	log_ss << "Bweq\t" << utils_log_double2string(Bweq) << "\t";
 	log_ss << "Fase\t" << ALM_state << "\t";
 	log_ss << "Sincjoin\t" << Sincjoin_recv << "\t";	
 	log_ss << "Bwmax\t" << Bwmax << "\t";	
@@ -308,7 +360,7 @@ void ALMTF_init()
 	time_getus(&_timenow);
 	sprintf(_b, "%.6d", (int)_timenow.tv_usec);
 	logSS << _timenow.tv_sec << "," << _b << "\t ";
-	logSS << core_getActualLayer() << endl;
+	logSS << core_getCurrentLayer() << endl;
 	ofs_logLayers << "# Arquivo com dados para o Gnuplot" << endl;
 	ofs_logLayers << "# Tempo\t\tCamada" << endl;
 	ofs_logLayers << logSS.str();
@@ -335,17 +387,17 @@ void ALMTF_init()
 		*/
 #endif
 		ALMTF_EI(&TimeEI,&Cwnd,&Bwjanela,&Bweq,&Ep,&ALM_state);
-#ifdef _LOG_LAYERS
-		ofs_logLayers.flush();
-#endif
 #ifdef GRAPH_JAVAINTERFACE
 		Info.Bweq = Bweq;
 		Info.Bwjanela = Bwjanela;
 #endif	
 #ifdef _LOG_EI
-		ofs_logEI << "Cwnd\t" << Cwnd << "\t";
-		ofs_logEI << "Bwjanela\t" << Bwjanela << endl;
+		ofs_logEI << "Cwnd\t" << utils_log_double2string(Cwnd, 5, 2) << "\t";
+		ofs_logEI << "Bwjanela\t" << utils_log_double2string(Bwjanela) << endl;
 		ofs_logEI.flush();
+#endif
+#ifdef _LOG_LAYERS
+		ofs_logLayers.flush();
 #endif
 #ifdef _LOG_CWND
 		ofs_logCwnd << "Final Cwnd=" << Cwnd << endl;
@@ -354,7 +406,7 @@ void ALMTF_init()
 #ifdef _LOG_BWJANELA
 		ofs_logBwjanela << "Final Bwjanela=" << Bwjanela << endl;
 		ofs_logBwjanela << "========== Fim ALMTF_EI(): ==========" << endl;		
-#endif		
+#endif
 #ifdef _LOG_FAILURES
 		/*
 		ofs_logFailures << "Final join_failures = " << join_failures << endl << endl;
@@ -400,6 +452,9 @@ void ALMTF_init()
 #ifdef _LOG_TIMEOUT
 	ofs_logTimeout.close();
 #endif
+#ifdef _LOG_NETSTATE
+	ofs_logNet.close();
+#endif
 #ifdef _LOG_FAILURES
 	ofs_logFailures.close();
 #endif
@@ -411,21 +466,26 @@ void ALMTF_init()
 void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq, ALMTFLossEvent *Ep, ALMstate *ALM_state)
 {
 #ifdef _LOG_LAYERS
-		stringstream logSS("");
-		char _b[20];
-		memset(_b,0,sizeof(_b));
-		struct timeval _timenow;
-		time_getus(&_timenow);
-		sprintf(_b, "%.6d", (int)_timenow.tv_usec);
-		logSS << _timenow.tv_sec << "," << _b << "\t ";
-		logSS << core_getActualLayer() << endl;
-		ofs_logLayers << logSS.str();
+	stringstream logSS("");
+	char _b[20];
+	memset(_b,0,sizeof(_b));
+	struct timeval _timenow;
+	time_getus(&_timenow);
+	sprintf(_b, "%.6d", (int)_timenow.tv_usec);
+	logSS << _timenow.tv_sec << "," << _b << "\t ";
+	logSS << core_getCurrentLayer() << endl;
+	ofs_logLayers << logSS.str();
 #endif
 	// tempo de início do algoritmo
 	struct timeval tstart;
 	time_getus(&tstart);
+#ifdef LEARNING
+	if (time_compare(&tstart,&t_failure) > 0)
+		stable_layer = core_getCurrentLayer();
+	
+#endif
 	char b[20];
-	unsigned int Bwatual = core_getRatesCumActual();
+	unsigned int Bwatual = core_getRatesCumCurrent();
 #ifdef _LOG_EI
 	stringstream logEI_ss("");
 	memset(b, 0,sizeof(b));
@@ -446,7 +506,7 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 #endif
 	*Bweq = ALMTF_estimabanda(TimePkt,Bweq,Ep,tpRTT);
 #ifdef _LOG_EI
-	logEI_ss << "Bweq\t" << *Bweq << "\t";
+	logEI_ss << "Bweq\t" << utils_log_double2string(*Bweq) << "\t";
 	ofs_logEI << logEI_ss.str();
 #endif
 	// Efetua estimativa de banda atraves da equacao do TCP, armazenando na variavel banda_eqn
@@ -455,7 +515,7 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 #ifdef _LOG_CWND
 		ofs_logCwnd << "if (time_compare(&TimeEI->Stab, &tstart) > 0)" << endl;
 #endif
-		*Cwnd = ALMTF_rate2win(Bwjanela, Cwnd);
+		*Cwnd = ALMTF_rate2win(Bwjanela, Cwnd);	//TEMP função removida, a princípio não é pra ter.
 		ALMTF_setNumloss(0);
 		Sincjoin_recv=0;
 #ifdef _LOG_LOG
@@ -474,10 +534,10 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 	if (Bwmax == 0) return;
 
 	unsigned int bwup;
-	if (core_getActualLayer() == core_getTotalLayers()-1)
+	if (core_getCurrentLayer() == core_getTotalLayers()-1)
 		bwup = Bwatual;
 	else {
-		bwup = core_getRatesCum(core_getActualLayer()+1);
+		bwup = core_getRatesCum(core_getCurrentLayer()+1);
 	}
 
 	cwndant = *Cwnd;
@@ -510,22 +570,29 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 #ifdef _LOG_CWND
 				ofs_logCwnd << "Cwnd *= 1.5\t\tCwnd=" << *Cwnd << endl;
 #endif
-				if (*Cwnd > ALMTF_WINDOWSIZE) {
+				double cwnd_max;	//TESTANDO
+				double dbRTT;
+				struct timeval tpRTT = ALMTF_getRTT();
+				dbRTT = time_timeval2double(&tpRTT);
+				cwnd_max = (Bwmax * dbRTT*1000)/(ALMTF_PACKETSIZE * 8);
+
+				if (*Cwnd > cwnd_max) {
+					*Cwnd = cwnd_max;
+#ifdef _LOG_CWND
+					ofs_logCwnd << "Cwnd = cwnd_max\t\tCwnd=" << *Cwnd << endl;
+#endif					
+				}	
+
+				/*if (*Cwnd > ALMTF_WINDOWSIZE) {
 					*Cwnd = ALMTF_WINDOWSIZE;
 #ifdef _LOG_CWND
 					ofs_logCwnd << "Cwnd = ALMTF_WINDOWSIZE\t\tCwnd=" << *Cwnd << endl;
 #endif					
-				}	
+				}*/	
 #ifdef _LOG_BWJANELA
 				ofs_logBwjanela << "case ALM_STATE_START\tif (Numloss == 0)" << endl;
 #endif	
 				*Bwjanela = ALMTF_win2rate(Cwnd); // lixo
-				if (*Bwjanela > Bwmax) {
-					*Bwjanela = Bwmax;
-#ifdef _LOG_BWJANELA
-				ofs_logBwjanela << "\tBwjanela = Bwmax\t\tBwjanela=" << *Bwjanela << endl;
-#endif				
-				}
 #ifdef _LOG_LOG
 				ofs_log << "\t Cwnd foi para "<<*Cwnd<<endl;
 				ofs_log << "\t Bwjanela foi para "<<*Bwjanela<<endl;
@@ -543,7 +610,7 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 			}
 #ifdef _LOG_LOG
 			log_printAll(ALM_state, Bwjanela, Bweq, Cwnd);
-			ofs_log << "\t FIM START" << endl;
+			ofs_log << "\t FIM START" << endl;	
 #endif
 			break;
 		case ALM_STATE_STEADY:
@@ -561,22 +628,28 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 #ifdef _LOG_CWND
 				ofs_logCwnd << "Cwnd += 0.1\t\tCwnd=" << *Cwnd << endl;
 #endif
-				if (*Cwnd > ALMTF_WINDOWSIZE) {
+				double cwnd_max;	//TESTANDO
+				double dbRTT;
+				struct timeval tpRTT = ALMTF_getRTT();
+				dbRTT = time_timeval2double(&tpRTT);
+				cwnd_max = (Bwmax * dbRTT*1000)/(ALMTF_PACKETSIZE * 8);
+
+				if (*Cwnd > cwnd_max) {
+					*Cwnd = cwnd_max;
+#ifdef _LOG_CWND
+					ofs_logCwnd << "Cwnd = cwnd_max\t\tCwnd=" << *Cwnd << endl;
+#endif					
+				}	
+				/*if (*Cwnd > ALMTF_WINDOWSIZE) {
 					*Cwnd = ALMTF_WINDOWSIZE;
 #ifdef _LOG_CWND
 					ofs_logCwnd << "Cwnd = ALMTF_WINDOWSIZE\t\tCwnd=" << *Cwnd << endl;
 #endif					
-				}
+				}*/
 #ifdef _LOG_BWJANELA
 				ofs_logBwjanela << "case ALM_STATE_STEADY\tif (Numloss == 0)" << endl;
 #endif	
 				*Bwjanela = ALMTF_win2rate(Cwnd);				
-				if (*Bwjanela > Bwmax) {
-					*Bwjanela = Bwmax; // ?? precisa será
-#ifdef _LOG_BWJANELA
-					ofs_logBwjanela << "\tBwjanela = Bwmax\t\tBwjanela=" << *Bwjanela << endl;
-#endif	
-				}
 			} else {
 #ifdef _LOG_LOG
 				ofs_log << "\t NUMLOSS == "<<ALMTF_getNumloss()<<endl;
@@ -598,7 +671,7 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 #ifdef _LOG_LOG
 		ofs_log << "\t Bwjanela > 2*Bweq, limitando conforme Bweq"<<endl;
 #endif
-		*Bwjanela = 2*(*Bweq);
+		*Bwjanela = 2*(*Bweq);	//TEMP removida proteção de bweq
 #ifdef _LOG_BWJANELA
 		ofs_logBwjanela << "if (Bwjanela > 2*Bweq)\t\tBwjanela=" << *Bwjanela << endl;
 #endif	
@@ -607,7 +680,7 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 #ifdef _LOG_LOG
 				ofs_log << "\t Bwjanela < Bweq/2, limitando conforme Bweq"<<endl;
 #endif
-				*Bwjanela = (*Bweq)/2;
+				*Bwjanela = (*Bweq)/2;  //TEMP removida proteção de bweq
 #ifdef _LOG_BWJANELA
 				ofs_logBwjanela << "if (Bwjanela < Bweq/2)\t\tBwjanela=" << *Bwjanela << endl;
 #endif				
@@ -618,39 +691,51 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 #endif
 #ifdef _LOG_EI
 	ofs_logEI << "Sincjoin\t" << Sincjoin_recv << "\t";
-	ofs_logEI << "Bwmax\t" << Bwmax << "\t";
+	ofs_logEI << "Bwmax\t" << utils_log_double2string(Bwmax,1,2) << "\t";
 #endif	
 #ifdef _LOG_LOG
 			ofs_log << "\t Bwjanela = "<<*Bwjanela<<"\t Bwup = "<<bwup<<endl;;
 #endif
 	// TRATA SUBIR CAMADA
-	if (*Bwjanela > bwup) {
-#ifdef SINCRONISMO_JOIN
-		if (Sincjoin_recv > core_getActualLayer() || *ALM_state == ALM_STATE_START)
-#else			
-#ifdef TIME_SLOTS
-		if (ts_add	|| *ALM_state == ALM_STATE_START)
-			//ts_add = false; // pode adicionar quantas camadas quiser???
-#else
-#ifdef LEARNING
-		if (*ALM_state == ALM_STATE_START || true)
-			// Ele sempre vai tentar subir de camada, não interessa qual o estado dele.
-#endif
-#endif
-#endif
-		{	
+	if (*Bwjanela > bwup) {		
+		if (Sincjoin_recv > core_getCurrentLayer() || *ALM_state == ALM_STATE_START) {
 #ifdef _LOG_LOG
-			ofs_log << "if (Sincjoin_recv > core_getActualLayer() || *ALM_state == ALM_STATE_START)" << endl;
-			ofs_log << "Sincjoin = " << Sincjoin_recv << "\tCamada Atual = " << core_getActualLayer() << endl;
+			ofs_log << "if (Sincjoin_recv > core_getCurrentLayer() || *ALM_state == ALM_STATE_START)" << endl;
+			ofs_log << "Sincjoin = " << Sincjoin_recv << "\tCamada Atual = " << core_getCurrentLayer() << endl;
 #endif
-			int r = ALMTF_addLayer(Bwjanela, &TimeEI->AddLayerWait, Cwnd);			
-			if (r == 1) {
+#ifdef NETSTATE
+			NETSTATEvars netVars;
+			save_netvars(&netVars,*Bwjanela,Bwmax,*Cwnd);
+			/*
+			netVars.Bwjanela = *Bwjanela;
+			netVars.Bwmax = Bwmax;
+			netVars.Cwnd = *Cwnd;
+			*/
+#endif
+			int r = ALMTF_addLayer(Bwjanela, &TimeEI->AddLayerWait, Cwnd);
+			if (r == 1) {		
 				// Subiu de camada
 #ifdef _LOG_LOG
-				ofs_log << "Camada Adicionada = " << core_getActualLayer() << endl;
+				ofs_log << "Camada Adicionada = " << core_getCurrentLayer() << endl;
 #endif
-#ifdef SINCRONISMO_JOIN
 				Sincjoin_recv = 0;
+#ifdef NETSTATE
+				time_getus(&t_failure);
+				time_add_ms(&t_failure, 120000, &t_failure); // 120s = 2min
+				netVars.expireTime = t_failure;	//Guarda o tempo do estado.
+				netVars.falhou = false;			//Seta como false, pois pode não falhar.
+				netList[core_getCurrentLayer()][posAtual] = netVars;
+				posAtual++;
+				if (posAtual == NUM_ELEM)
+					posAtual = 0;
+#ifdef _LOG_NETSTATE
+				ofs_logNet << "Subiu de camada! " << core_getCurrentLayer() << endl;
+				ofs_logNet << "Guardou o estado da rede!" << endl;
+				char auxb[20];
+				memset(auxb, 0,sizeof(auxb));				
+				sprintf(auxb, "%.6d", (int)t_failure.tv_usec);	
+				ofs_logNet << "Tempo atual =              \t" << t_failure.tv_sec << "," << auxb << endl;
+#endif
 #endif
 #ifdef LEARNING
 				time_getus(&t_failure);
@@ -661,35 +746,39 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 				sprintf(auxb, "%.6d", (int)t_failure.tv_usec);	
 				ofs_logFailures << "Tempo atual =              \t" << t_failure.tv_sec << "," << auxb << endl;
 #endif
-				time_add_ms(&t_failure, FAIL_TIME, &t_failure);
+				time_add_ms(&t_failure, fail_time, &t_failure);
 				// Tempo atual + x segundos
 				// Se descer de camada x segundos apos a subida, considera como uma falha
+#ifdef _LOG_NETSTATE				
+				memset(auxb, 0,sizeof(auxb));				
+				sprintf(auxb, "%.6d", (int)t_failure.tv_usec);
+				ofs_logNet << "Tempo atual + 2 segundos = \t" << t_failure.tv_sec << "," << auxb << endl;
+				ofs_logNet << endl;
+#endif
 #ifdef _LOG_FAILURES				
 				memset(auxb, 0,sizeof(auxb));				
 				sprintf(auxb, "%.6d", (int)t_failure.tv_usec);
 				ofs_logFailures << "Tempo atual + 2 segundos = \t" << t_failure.tv_sec << "," << auxb << endl;
 				ofs_logFailures << endl;
-#endif				 
-#endif				
+#endif
+#endif
 			} else 
-				if (r == -1) {		
-					// Não subiu de camada					
-					*Cwnd = cwndant;
+				if (r == -1) {
+					*Cwnd = cwndant;	//TODO tira sincronia com bwjanela!
 #ifdef _LOG_LOG
 					ofs_log << "Camada NAO Adicionada = " << "Cwnd = " << *Cwnd << endl;
 #endif
 #ifdef _LOG_CWND
 					ofs_logCwnd << "Cwnd = cwndant\t\tCwnd=" << *Cwnd << endl;
 #endif	
+					*Bwjanela = ALMTF_win2rate(Cwnd); //TESTANDO - recupera sincronia
 				}
 		}
-	}
-#ifdef SINCRONISMO_JOIN
-	else {
-		if (Sincjoin_recv > core_getActualLayer()+1 && *ALM_state == ALM_STATE_STEADY) {
+	} else {
+		if (Sincjoin_recv > core_getCurrentLayer()+1 && *ALM_state == ALM_STATE_STEADY) {
 #ifdef _LOG_LOG
-			ofs_log << "if (Sincjoin_recv > core_getActualLayer()+1 && *ALM_state == ALM_STATE_STEADY)" << endl;
-			ofs_log << "Sincjoin = " << Sincjoin_recv << "\tCamada Atual = " << core_getActualLayer() << endl;
+			ofs_log << "if (Sincjoin_recv > core_getCurrentLayer()+1 && *ALM_state == ALM_STATE_STEADY)" << endl;
+			ofs_log << "Sincjoin = " << Sincjoin_recv << "\tCamada Atual = " << core_getCurrentLayer() << endl;
 #endif
 			TimeEI->NoColateral = tstart;
 			time_add_ms(&TimeEI->NoColateral, 500, &TimeEI->NoColateral);
@@ -700,20 +789,20 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 	}
 	//Faz um único join por vez
 	Sincjoin_recv = 0;
-#endif
 	// TRATA DESCER CAMADA
-	if (core_getActualLayer() <= 0) return;
+	if (core_getCurrentLayer() <= 0) return;
 
 	while (*Bwjanela < Bwatual) {
 #ifdef _LOG_LOG
 		ofs_log << "while (Bwjanela < Bwatual)" << "Bwjanela = " << *Bwjanela << " Bwatual = " << Bwatual << " Bweq = " << *Bweq << endl;
 		ofs_log << "if (Bweq >= Bwatual) RETURN";
 #endif
-		if (*Bweq >= Bwatual) return;		
+		if (*Bweq >= Bwatual) return;		//TEMP removida proteção de bweq
 #ifdef _LOG_LOG
-		ofs_log << "\t Vai DEIXAR camada! "<<core_getActualLayer()<<endl;
+		ofs_log << "\t Vai DEIXAR camada! "<<core_getCurrentLayer()<<endl;
 #endif
 		core_leaveLayer();
+		
 #ifdef _LOG_LAYERS
 		stringstream logSS("");
 		char _b[20];
@@ -722,8 +811,33 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 		time_getus(&_timenow);
 		sprintf(_b, "%.6d", (int)_timenow.tv_usec);
 		logSS << _timenow.tv_sec << "," << _b << "\t ";
-		logSS << core_getActualLayer() << endl;
+		logSS << core_getCurrentLayer() << endl;
 		ofs_logLayers << logSS.str();
+#endif
+#ifdef NETSTATE
+		struct timeval timenow;		
+		time_getus(&timenow);
+#ifdef _LOG_NETSTATE
+		ofs_logNet << "Desceu de camada!" << endl;
+		memset(b, 0,sizeof(b));				
+		sprintf(b, "%.6d", (int)timenow.tv_usec);
+		ofs_logNet << "Tempo Atual = \t" << timenow.tv_sec << "," << b << "\t" << endl;		
+#endif
+		// Se esta deixando camada antes do tempo estipulado
+		// considera como sendo uma perda
+		if (time_compare(&t_failure,&timenow) > 0){
+#ifdef _LOG_NETSTATE
+			ofs_logNet << "timenow < t_failure !! Falhou na tentativa de join!!" << "\t" << endl;			
+#endif
+			join_failures++;
+			if (posAtual > 0)
+				netList[core_getCurrentLayer()+1][posAtual-1].falhou = true;
+			else netList[core_getCurrentLayer()+1][NUM_ELEM-1].falhou = true;
+			// NUM_ELEM-1 é igual ao último elemento.
+#ifdef _LOG_NETSTATE
+			ofs_logNet << "Salvou o estado atual da rede!\t" << endl << endl;			
+#endif
+		}
 #endif
 #ifdef LEARNING
 		struct timeval timenow;
@@ -742,12 +856,16 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 			ofs_logFailures << "timenow < t_failure !! Falhou na tentativa de join!!" << "\t" << endl;			
 #endif
 		}
+		if (stable_layer > core_getCurrentLayer()){
+			stable_layer = core_getCurrentLayer();
+			t_stab_mult = 1;
+		}
 #ifdef _LOG_FAILURES
 		ofs_logFailures << "join_failures = " << join_failures << "\t" << endl;		
 #endif
 #endif
 #ifdef _LOG_LOG
-		ofs_log << "\t DEIXOU A CAMADA! "<<core_getActualLayer()+1<<endl;
+		ofs_log << "\t DEIXOU A CAMADA! "<<core_getCurrentLayer()+1<<endl;
 #endif
 		TimeEI->Stab = tstart;
 		time_add_ms(&TimeEI->Stab, ALMTF_T_STAB, &TimeEI->Stab);
@@ -755,12 +873,12 @@ void ALMTF_EI(ALMTFTimeEI *TimeEI, double *Cwnd, double *Bwjanela, double *Bweq,
 		ofs_log << "TimeStart = " << tstart.tv_sec << "," << tstart.tv_usec << "\tTimeEI->Stab = " << TimeEI->Stab.tv_sec << "," <<  TimeEI->Stab.tv_usec << endl; 
 #endif
 		//Time_stab = tstart + ALMTF_T_STAB;
-		if (core_getActualLayer() <= 0) return;
-		Bwatual = core_getRatesCumActual();
-		if (core_getActualLayer() == core_getTotalLayers()-1)
+		if (core_getCurrentLayer() <= 0) return;
+		Bwatual = core_getRatesCumCurrent();
+		if (core_getCurrentLayer() == core_getTotalLayers()-1)
 			bwup = Bwatual;
 		else
-			bwup = core_getRatesCum(core_getActualLayer()+1);
+			bwup = core_getRatesCum(core_getCurrentLayer()+1);
 		*Bwjanela = (Bwatual+bwup)/2;
 		*Cwnd = ALMTF_rate2win(Bwjanela, Cwnd);
 #ifdef _LOG_LOG
@@ -803,15 +921,30 @@ double ALMTF_rate2win(double *Bwjanela, double *Cwnd)
 	double dbRTT;
 	struct timeval tpRTT = ALMTF_getRTT();
 	dbRTT = time_timeval2double(&tpRTT);
-	wnd = ((*Bwjanela) * dbRTT*1000)/(ALMTF_PACKETSIZE * 8);	
+	wnd = ((*Bwjanela) * dbRTT*1000)/(ALMTF_PACKETSIZE * 8);
+	double aux = wnd;
+	bool upd_wnd = 0;	
 	//Proteção para Cwnd não variar mais do que 30%
-	if ((wnd/(*Cwnd)) > 0.7*(*Cwnd) && (wnd/(*Cwnd)) < 1.3*(*Cwnd) && wnd < ALMTF_WINDOWSIZE && wnd > 1.0) 
-		wnd = *Cwnd;
+	if ((wnd/(*Cwnd)) > 0.7*(*Cwnd) && (wnd/(*Cwnd)) < 1.3*(*Cwnd) && wnd < ALMTF_WINDOWSIZE && wnd > 1.0) {
+		wnd = *Cwnd;				//TODO a wnd perde a sincronia com bwjanela!
+		upd_wnd = 1;
+	}
 	if (wnd > ALMTF_WINDOWSIZE) {
-		wnd = ALMTF_WINDOWSIZE;
+		wnd = ALMTF_WINDOWSIZE;		//TODO a wnd perde a sincronia com bwjanela!
+		upd_wnd = 1;		
 	}		
-	if (wnd < 1.0)
-		wnd = 1.0;
+	if (wnd < 1.0) {
+		wnd = 1.0;					//TODO a wnd perde a sincronia com bwjanela!
+		upd_wnd = 1;				
+	}
+	if(upd_wnd) {
+		double* wnd_aux = new double(wnd);
+#ifdef _LOG_BWJANELA
+	ofs_logBwjanela << "rate2win! sincronizar em win2rate. Original " << *Cwnd << " calculado " << aux << " mudou para: " << wnd << endl;
+#endif
+		ALMTF_win2rate(wnd_aux); //UNST tenta recuperar a sincronia
+		delete wnd_aux;
+	}
 #ifdef _LOG_CWND
 	ofs_logCwnd << "\tALMTF_rate2win()\t\tCwnd=" << wnd << " RTT:=" << dbRTT << endl;
 #endif
@@ -829,8 +962,8 @@ double ALMTF_win2rate(double *Cwnd)
 {	
 	double bws;
 	/* Proteção para Cwnd não ultrapassar o valor máximo. */
-	if (*Cwnd > ALMTF_WINDOWSIZE)
-		*Cwnd = ALMTF_WINDOWSIZE;
+	/*if (*Cwnd > ALMTF_WINDOWSIZE)	//TESTANDO esse controle nao deve mais ser necessario.
+		*Cwnd = ALMTF_WINDOWSIZE;*/	
 	double dbRTT;
 	struct timeval tpRTT = ALMTF_getRTT();
 	dbRTT = time_timeval2double(&tpRTT);	
@@ -842,6 +975,15 @@ double ALMTF_win2rate(double *Cwnd)
 #ifdef _LOG_BWJANELA
 	ofs_logBwjanela << "\tALMTF_win2rate()\t\tBwjanela=" << bws << " RTT: " << dbRTT << endl;
 #endif
+	/*if (bws > Bwmax) {	//UNST TODO tira a sincronia com Cwnd!
+		bws = Bwmax;		//TESTANDO nao eh pra precisar mais disso
+		//double* bws_aux = new double(bws);
+		//ALMTF_rate2win(bws_aux, Cwnd); //UNST tenta recuperar a sincronia
+		//delete bws_aux;
+#ifdef _LOG_BWJANELA
+				ofs_logBwjanela << "\tBwjanela = Bwmax\t\tBwjanela=" << bws << endl;
+#endif				
+	}*/		
 	return (bws);
 }
 
@@ -883,10 +1025,10 @@ bool ALMTF_timeout() {
  *  "p" representa a media das perdas.
  *  "RTT" representa o rtt medido pelo sistema.
  */
-double ALMTF_perdas2banda(double p, struct timeval actRTT) 
+double ALMTF_perdas2banda(double p, struct timeval curRTT) 
 {
 	double dbRTT = 0;
-	dbRTT = time_timeval2double(&actRTT)*1000; //RTT em ms
+	dbRTT = time_timeval2double(&curRTT)*1000; //RTT em ms
 	if (p < 0 || dbRTT < 0)
 		return (-1);
 	double p2b = 0;
@@ -946,19 +1088,19 @@ void ALMTF_reduzbanda(double *Cwnd, double *Bwjanela)
  *	Estima banda equivalente. Esta funcao organiza os parametros necessarios
  *  para serem utilizados na equacao. Funcao chamada a cada pacote recebido.
  */
-double ALMTF_estimabanda(struct timeval timestamp, double *Bweq, ALMTFLossEvent *Ep, struct timeval actRTT) 
+double ALMTF_estimabanda(struct timeval timestamp, double *Bweq, ALMTFLossEvent *Ep, struct timeval curRTT) 
 {
 	double banda = 0.0;
 	double perdas = 0.0;
-	double dbRTT = time_timeval2double(&actRTT);
-	perdas = ALMTF_estimaperdas(timestamp,Ep,actRTT);
+	double dbRTT = time_timeval2double(&curRTT);
+	perdas = ALMTF_estimaperdas(timestamp,Ep,curRTT);
 	if (perdas > 0) {
-		banda = ALMTF_perdas2banda(perdas,actRTT);
+		banda = ALMTF_perdas2banda(perdas,curRTT);
 	} else {
 		if (dbRTT == 0.0)
 			banda = (*Bweq) + (ALMTF_PACKETSIZE*0.8/(0.000001*1000));
 		else
-			banda = (*Bweq) + (ALMTF_PACKETSIZE*0.8/(dbRTT*1000)); // BLAH  se RTT == 0 ????
+			banda = (*Bweq) + (ALMTF_PACKETSIZE*0.8/(dbRTT*1000)); // BLAH TODO se RTT == 0 ????
 	}
 	if (banda > Bwmax && Bwmax > 0)
 		banda = Bwmax;
@@ -972,7 +1114,7 @@ double ALMTF_estimabanda(struct timeval timestamp, double *Bweq, ALMTFLossEvent 
  *  tstamp_ultperda = Ep_tstamp_ultperda;
  *  pkt_rec = Ep_pkt_rec;
  */
-double ALMTF_estimaperdas(struct timeval timestamp, ALMTFLossEvent *Ep, struct timeval actRTT)
+double ALMTF_estimaperdas(struct timeval timestamp, ALMTFLossEvent *Ep, struct timeval curRTT)
 {
 	int i;
 	unsigned long pkt_tmp;
@@ -984,7 +1126,7 @@ double ALMTF_estimaperdas(struct timeval timestamp, ALMTFLossEvent *Ep, struct t
 		tmpsc.tv_sec = 0;
 		tmpsc.tv_usec = 0;
 		time_subtract(&timestamp,&Ep->Ep_tstamp_ultperda,&tmpsc);
-		if (time_compare(&tmpsc,&actRTT) > 0) {		
+		if (time_compare(&tmpsc,&curRTT) > 0) {		
 			Ep->Ep_tstamp_ultperda = timestamp;
 			Ep->Ep++;
 			for (i=7; i>0; i--) {
@@ -1136,7 +1278,7 @@ void *ALMTF_calcbwmax(void *)
 						}
 					}
 #ifdef _LOG_BWMAX
-					ss << "\t PP_Bufffer = ";
+					ss << "\t PP_Buffer = ";
 					for (int i = 0; i < 10; i++)
 						ss << PP_buf[i] << " - ";
 					ss<<endl;
@@ -1163,13 +1305,66 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 	time_getus(&timenow);
 	if (time_compare(Time_addLayerWait,&timenow) > 0) //Aguarda antes de subir novamente.
 		return -1;									   //timenow < Time_addLayerWait
-
+	
+#ifdef NETSTATE
+	if ((core_getCurrentLayer() < core_getTotalLayers()-1) && (join_failures > NUM_ELEM)){		
+		for (int k = 0 ; k < NUM_ELEM; k++){
+			// Se expirou o tempo deste estado passa para o próximo
+			if (time_compare(&netList[core_getCurrentLayer()+1][k].expireTime,&timenow) < 0){
+#ifdef _LOG_NETSTATE
+					ofs_logNet << "Tempo Expirado, proximo estado!" << endl;
+#endif
+					continue;
+			}
+	
+			if (netList[core_getCurrentLayer()+1][k].falhou == true){
+				//Só compara os estados se o estado guardado é de uma falha.
+				double failbw = netList[core_getCurrentLayer()+1][k].Bwjanela;
+				double failbwmax = netList[core_getCurrentLayer()+1][k].Bwmax;
+				double failcwnd = netList[core_getCurrentLayer()+1][k].Cwnd;
+#ifdef _LOG_NETSTATE
+				ofs_logNet << "***** Estado De Falha *****" << endl;
+				ofs_logNet << "Bwjanela = " << failbw << endl;
+				ofs_logNet << "Bwmax = " << failbwmax << endl;
+				ofs_logNet << "Cwnd = " << failcwnd << endl;
+				ofs_logNet << "***************************" << endl;
+				ofs_logNet << "****** Estado Atual  ******" << endl;
+				ofs_logNet << "Bwjanela = " << *novabw << endl;
+				ofs_logNet << "Bwmax = " << Bwmax << endl;
+				ofs_logNet << "Cwnd = " << *Cwnd << endl;
+				ofs_logNet << "***************************" << endl;
+#endif
+				/* Testa as novas condições da rede.
+				 * Se elas forem parecidas com o estado armazenado então não sobe de camada.
+				 */
+				
+				if (  ((failbw*(1-similarity) < *novabw) && (*novabw < failbw*(1+similarity)))
+					&& ((failbwmax*(1-similarity) < Bwmax) && (Bwmax < failbwmax*(1+similarity)))
+					&& ((failcwnd*(1-similarity) < *Cwnd) && (*Cwnd < failcwnd*(1+similarity)))		
+						)
+				{	
+#ifdef _LOG_NETSTATE
+					ofs_logNet << "Estado atual parecido com um de falha!\t Não vai subir!" << endl << endl;
+#endif
+					return -1;
+				}
+#ifdef _LOG_NETSTATE
+			ofs_logNet << "Estado atual diferente!" << endl << endl;
+#endif
+			}
+		}
+#ifdef _LOG_NETSTATE
+			ofs_logNet << "Estado atual diferente de todos armazenados! Vai tentar subir!" << endl << endl;
+#endif	
+	}
+#endif
+	
 	unsigned int bwup;
-	unsigned int Bwatual = core_getRatesCumActual();
-	if (core_getActualLayer() == core_getTotalLayers()-1)
+	unsigned int Bwatual = core_getRatesCumCurrent();
+	if (core_getCurrentLayer() == core_getTotalLayers()-1)
 		bwup = Bwatual;
 	else
-		bwup = core_getRatesCum(core_getActualLayer()+1);	
+		bwup = core_getRatesCum(core_getCurrentLayer()+1);	
 	
 	while (*novabw > bwup) {
 		if (bwup >= Bwmax) {
@@ -1178,7 +1373,7 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 #endif
 			return -1;
 		}
-		if (core_getActualLayer() >= core_getTotalLayers()-1) {
+		if (core_getCurrentLayer() >= core_getTotalLayers()-1) {
 #ifdef _ALMTF_DEBUG2
 			cout << "Camada Máxima Atingida!" << endl;
 #endif
@@ -1186,12 +1381,13 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 		}
 #ifdef _LOG_LOG
 		stringstream ss;
-		ss << time_getnow_sec() <<","<<time_getnow_usec()<<"us:\t Bwjanela > bwup, vai SUBIR camada! "<<core_getActualLayer()+1<<endl;
+		ss << time_getnow_sec() <<","<<time_getnow_usec()<<"us:\t Bwjanela > bwup, vai SUBIR camada! "<<core_getCurrentLayer()+1<<endl;
 		ss << "\t Bwjanela = "<<*novabw<<endl;
 		ss << "\t bwup = "<<bwup<<endl;
 		ofs_log << ss.str();
 #endif
 		core_addLayer();
+		
 #ifdef _LOG_LAYERS
 		stringstream logSS("");
 		char _b[20];
@@ -1200,16 +1396,17 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 		time_getus(&_timenow);
 		sprintf(_b, "%.6d", (int)_timenow.tv_usec);
 		logSS << _timenow.tv_sec << "," << _b << "\t ";
-		logSS << core_getActualLayer() << endl;
+		logSS << core_getCurrentLayer() << endl;
 		ofs_logLayers << logSS.str();
 #endif
-		//Bwatual = core_getRatesCumActual();
-		if (core_getActualLayer() == core_getTotalLayers()-1) { 
+		
+		//Bwatual = core_getRatesCumCurrent();
+		if (core_getCurrentLayer() == core_getTotalLayers()-1) { 
 			//Está na última camada,não tem mais o que subir.
 			bwup = Bwatual;
 			return -1;
 		}
-		else bwup =  core_getRatesCum(core_getActualLayer());
+		else bwup =  core_getRatesCum(core_getCurrentLayer());
 		if (*novabw > bwup) {
 			*novabw = (Bwatual + bwup) / 2;
 #ifdef _LOG_BWJANELA
@@ -1221,7 +1418,7 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 			*Cwnd = ALMTF_rate2win(novabw, Cwnd);
 		}
 	}
-	*Time_addLayerWait = timenow;	
+	*Time_addLayerWait = timenow;
 #ifdef LEARNING	
 	// se teve 3 falhas ao subir
 	if (join_failures >= 3){
@@ -1232,8 +1429,8 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 #endif
 		join_failures = 0;
 		// incrementa o multiplicador do tempo de estabilização
-		if (t_stab_mult < MULT_LIMIT) // mas não para mais que o limitador
-			t_stab_mult = t_stab_mult + MULT_INC;
+		if (t_stab_mult < mult_limit) // mas não para mais que o limitador
+			t_stab_mult = t_stab_mult * mult_inc; // exponencial -> 2,4,8,16...MULT_LIMIT
 #ifdef _LOG_FAILURES
 		ofs_logFailures << "Multiplicador = " << t_stab_mult << endl;
 #endif
@@ -1245,7 +1442,6 @@ int ALMTF_addLayer (double *novabw, struct timeval *Time_addLayerWait, double *C
 #endif
 	return 1;
 
-
 }
 
 struct timeval ALMTF_calculaRTT (long lseqno, transm_packet* pkt, struct timeval* timepkt, struct timeval pRTT)
@@ -1255,7 +1451,7 @@ struct timeval ALMTF_calculaRTT (long lseqno, transm_packet* pkt, struct timeval
 	rtt_medido.tv_sec = 0;
 	rtt_medido.tv_usec = 0;
 	hdr_almtf* almtf_h = &(pkt->header);	
-	// se é o primeiro pacote recebido na camada, envia msg para o transmissor e ignora o cálculo de RTT
+	// se é o primeiro pacote recebido na camada, envia msg para o transmissor e ignora todo cálculo de RTT
 	if (lseqno == -1) {			
 		ALMTF_sendPkt();
 		time_div(&ctpRTT, 2.0, &t_vinda);
@@ -1321,7 +1517,7 @@ struct timeval ALMTF_calculaRTT (long lseqno, transm_packet* pkt, struct timeval
 			//		RTT = rtt_medido;	
 		} else {
 			time_mul(&t_vinda, 2.0, &ctpRTT);
-			//RTT = 2 * t_vinda; // supoe link simetrico na primeira vez //  t_vinda = RTT/2 ali em cima .. entõa aqui o RTT deve continuar mesma coisa, nem precisa esse código
+			//RTT = 2 * t_vinda; // supoe link simetrico na primeira vez // TODO t_vinda = RTT/2 ali em cima .. entõa aqui o RTT deve continuar mesma coisa, nem precisa esse código
 			FiltraRTT = true; // todas outras medidas utiliza o filtro para deixar mais estavel
 		}		
 		//////// Fim do calculo de RTT /////////
@@ -1331,6 +1527,8 @@ struct timeval ALMTF_calculaRTT (long lseqno, transm_packet* pkt, struct timeval
 				Numrec = 60;
 		}
 	}
+	//ctpRTT.tv_sec = 0;	//TEMP RTT FIXADO!!
+	//ctpRTT.tv_usec = 10000;	
 	return(ctpRTT);
 }
 
@@ -1368,18 +1566,10 @@ void ALMTF_recvPkt(ALMTFRecLayer *layer, transm_packet* pkt, struct timeval *tim
 {
 	hdr_almtf* almtf_h = &(pkt->header);
 	if (layer->layerID == 0) 
-	{	
-#ifdef TIME_SLOT
-		if (almtf_h->flagsALMTF & FL_ADDLAYER)
-			ts_add = true;
-		else ts_add = false;
-#else
-		ts_add = true;
-#endif
+	{		
 #ifdef SINCRONISMO_JOIN
 		if (almtf_h->sincjoin > (unsigned)Sincjoin_recv)
 			Sincjoin_recv = almtf_h->sincjoin;
-
 #else
 		Sincjoin_recv = 100;
 #endif
@@ -1468,7 +1658,7 @@ void ALMTF_sendPkt()
 #ifdef GRAPH_JAVAINTERFACE
 void GRAPH_getInfo(GRAPHInfo* i)
 {	
-	i->Bwatual = core_getRatesCumActual();
+	i->Bwatual = core_getRatesCumCurrent();
 	i->Bweq = Info.Bweq;
 	i->Bwjanela = Info.Bwjanela;
 	i->Bwmax = Bwmax;
@@ -1476,6 +1666,25 @@ void GRAPH_getInfo(GRAPHInfo* i)
 	double dbRTT = time_timeval2double(&tmpRTT);
 	i->RTT = dbRTT*1000000;
 	i->Numloss = ALMTF_getNumloss();
+}
+#endif
+
+#ifdef NETSTATE
+void init_netvars(NETSTATEvars *net)
+{
+	net->Bwjanela = 0;
+	net->Bwmax = 0;
+	net->Cwnd = 0;
+	net->expireTime.tv_sec = 0;
+	net->expireTime.tv_usec = 0;
+}
+
+void save_netvars(NETSTATEvars *net, double Bwjanela, double Bwmax, double Cwnd)
+{
+	net->Bwjanela = Bwjanela;
+	net->Bwmax = Bwmax;
+	net->Cwnd = Cwnd;
+	//time_getus(&(net->expireTime));
 }
 #endif
 
@@ -1520,9 +1729,40 @@ unsigned int ALMTF_getIP (char* IP)
 	return( (a*16777216)+(b*65536)+(c*256)+(d) );
 }
 
+#ifdef READ_CONFIG
+void learning_init(){	
+	ifstream file(FILENAME_LEARNING);
+	if (!file.is_open()){
+		cout << "\nError opening configuration file"<<endl;
+	    exit(0);
+	} else cout << endl << "Succeeded opening configuration file"<<endl;
+	
+	if (!file.eof()){
+		file >> fail_time;
+		file >> mult_limit;
+		file >> mult_inc;
+		file >> storage_time;
+		file >> similarity;
+	}
+	file.close();
+		
+	cout << "Configuracoes: " << endl;
+	cout << "\tfail_time = " << fail_time << endl;
+	cout << "\tmult_limit = " << mult_limit << endl;
+	cout << "\tmult_inc = " << mult_inc << endl;
+	cout << "\tstorage_time = " << storage_time << endl;
+	cout << "\tsimilarity = " << similarity << endl << endl;	
+}
+#endif
+
 int main(int argc, char *argv[])
-{
+{	
 	utils_init();
+#ifdef READ_CONFIG
+	learning_init();
+#endif
+	
+	
 	if (argc > 1) {
 		core_setLogTime(atoi(argv[1]));
 		if (argc > 2)
