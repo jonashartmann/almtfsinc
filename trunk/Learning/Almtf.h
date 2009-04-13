@@ -20,12 +20,11 @@
 //#define _ALMTF_DEBUG
 //#define GRAPH_JAVAINTERFACE
 #define _LOG_SPEED_AND_PACKETS
-#define SINCRONISMO_JOIN
-//#define NETSTATE		// definido no makefile
-//#define LEARNING		// definido no makefile
-//#define READ_CONFIG	// definido no makefile
+
 //#define _PACKETS_BUFFER
+
 #define GRAPH_NETWORK
+
 
 #define FL_INIRAJADA	0x80  // indicador de inicio de rajada (packet-pair ou packet-train)
 #define FL_MEDERTT		0x40  // indica que timestampOffset eh valido
@@ -60,7 +59,6 @@ typedef struct {
     struct timeval timestampEcho;	// echo do timestamp do receptor para calculo de RTT
     struct timeval timestampOffset;	// offset desde que transmissor recebeu pedido de feedback em ms
     unsigned int sincjoin;			// sincronismo no join (so receptores na camada menor ou igual a sincjoin podem fazer join)
-    
     unsigned char flagsALMTF;		// flags do ALMTF
 } hdr_almtf;
 
@@ -135,10 +133,12 @@ typedef struct {
 	// Eventos de perda
 	unsigned int Ep;								// Número de eventos de perda até o momento
 	float Ep_pesos[8];								// Pesos para cada evento de perda
-	unsigned long Ep_pkt_rec[8];			// Número de pacotes recebidos entre cada evento de perda
-	struct timeval Ep_tstamp_ultperda;	// Timestamp de quando ocorreu a última perda
+/*VP_CORRIGIDO - anterior: unsigned long Ep_pkt_rec[8];*/
+	unsigned long Ep_pkt_rec[9];					// Número de pacotes recebidos entre cada evento de perda
+	struct timeval Ep_tstamp_ultperda;				// Timestamp de quando ocorreu a última perda
 } ALMTFLossEvent;
 
+typedef enum {STAB, NOCL, ADDL} ALMTF_STAB;
 typedef struct {
 	struct timeval Stab;
 	struct timeval NoColateral;
@@ -185,6 +185,10 @@ typedef struct
 	int measure;
 	struct timeval start_time;	
 	long int num_packets;
+/*Alberto inseriu isto*/
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+/**/
 #ifdef _LOG_SPEED_AND_PACKETS
 	int *speedXtime;
 	int *packetsXtime;
