@@ -1,3 +1,18 @@
+/*
+*  Universidade Federal do Rio Grande do Sul - UFRGS
+*  PRAV - Projetos de Audio e V¡deo / Projeto SAM
+*  ALMTF++: Adaptative Layered Multicast TCP-Friendly
+*
+*  Copyright(C) 2008 - Andrea Collin Krob <ackrob@inf.ufrgs.br>
+*                               Alberto Santos Junior <ascjunior@inf.ufrgs.br>
+*                               Felipe Freitag Vargas <ffvargas@inf.ufrgs.br>
+*                               Joao Portal <jvportal@inf.ufrgs.br>
+*                               Jonas Hartmann <jonashartmann@inf.ufrgs.br>
+*                               Valter Roesler <roesler@inf.ufrgs.br>
+*
+* Recv_Almtf.cpp: Implementacao do Algoritmo ALMTF - Versao Linux
+*
+*/
 #ifndef RECV_CORE_H_
 #define RECV_CORE_H_
 
@@ -5,7 +20,13 @@
 #include <iostream>
 #include <sstream>
 #include <deque>
+
+/*
+ * inserido pelo mecanismo de aprendizado
+*/
+#ifdef NETSTATE
 #include <vector>
+#endif
 
 #include "../Almtf.h"
 #include "Recv_Almtf.h"
@@ -90,6 +111,10 @@ int core_getTotalLayers();
 int core_getCurrentLayer();
 
 void core_getLastPktTime(struct timeval *t);
+void core_setLastPktTime(struct timeval *t); //incluido por ascjunior: 06.11 -- alteração no controle de timeout
+void* core_ctrl_packets(void*);				 //incluido por ascjunior: 27.11 -- número de pacotes por segundo
+int get_numPackets();						 //incluido por ascjunior: 27.11 -- número de pacotes por segundo
+void set_numPackets();						 //incluido por ascjunior: 27.11 -- número de pacotes por segundo
 
 void core_getLastPktTimeLayerZero(struct timeval *t);
 

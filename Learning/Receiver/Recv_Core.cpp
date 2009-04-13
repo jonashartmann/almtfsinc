@@ -1,19 +1,18 @@
 /*
- *   Universidade Federal do Rio Grande do Sul - UFRGS
- *   PRAV - Projetos de Audio e Vídeo 
- *   Projeto SAM - Sistema Adaptativo Multimedia
- *
- *	 Copyright(C) 2008 - Andrea Collin Krob <ackrob@inf.ufrgs.br>
- *                       Alberto Junior     <e-mail>
- *                       Athos Fontanari    <aalfontanari@inf.ufrgs.br>
- *                       João Victor Portal <e-mail>
- *                       Leonardo Daronco   <e-mail>
- *                       Valter Roesler     <e-mail>
- *
- *
- *     Recv_Core.cpp: Funções do Núcleo do Receptor ALMTF.
- *
- */
+*  Universidade Federal do Rio Grande do Sul - UFRGS
+*  PRAV - Projetos de Audio e V¡deo / Projeto SAM
+*  ALMTF++: Adaptative Layered Multicast TCP-Friendly
+*
+*  Copyright(C) 2008 - Andrea Collin Krob <ackrob@inf.ufrgs.br>
+*                               Alberto Santos Junior <ascjunior@inf.ufrgs.br>
+*                               Felipe Freitag Vargas <ffvargas@inf.ufrgs.br>
+*                               Joao Portal <jvportal@inf.ufrgs.br>
+*                               Jonas Hartmann <jonashartmann@inf.ufrgs.br>
+*                               Valter Roesler <roesler@inf.ufrgs.br>
+*
+* Recv_Almtf.cpp: Implementacao do Algoritmo ALMTF - Versao Linux
+*
+*/
 
 #include "Recv_Core.h"
 
@@ -40,12 +39,19 @@ char *ServerIP;
 int ServerPort = 0;
 
 struct timeval TimeLastPkt; // Momento de tempo em que foi recebido o último pacote. Usado para verificar timeout
+pthread_mutex_t TimeLastPkt_mutex = PTHREAD_MUTEX_INITIALIZER;
 struct timeval TimeLastPktLayerZero;
 struct timeval TimeLastTimestamp;
 
 pthread_t IDthreadprintf;
 pthread_t IDthreadlogsp;
 pthread_t IDthreadgraph;
+
+#ifdef CTRL_PPS
+	pthread_mutex_t mutex_pps = PTHREAD_MUTEX_INITIALIZER;
+	int num_tot_packets = 0;
+    pthread_t IDthreadpps;
+#endif
 
 list<string> recv_printlist;	// lista de strings para impressão na tela
 
@@ -92,6 +98,8 @@ void core_init()
 			 i->start_time.tv_sec = 0;
 			 i->start_time.tv_usec = 0;
 			 i->measure = 0;
+             pthread_cond_init(&(i->cond), NULL);
+             pthread_mutex_init(&(i->mutex), NULL);
 			 // taxas cumulativas de velocidade
 			 sum += i->speed;
 			 RatesCum[id] = sum;		
@@ -104,9 +112,26 @@ void core_init()
 				  i->speedXtime[j] = 0;
 			 }
 #endif
+			int erro;
+#ifdef _WIN32_
+			layer->haRecvThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)core_recvThread, (LPVOID)layer, 0, &(layer->dwRecvThread));
+#else
+			if ((erro = pthread_create(&((*i).IDthread), NULL, core_recvThread, (void *)&(*i))) != 0) {
+				cerr << "Error Creating Thread: " << erro <<"  layer->num: " << CurrentLayer+1 << "core_recvThread! " << endl;
+			}
+			//else cout << "criou thread da camada " << i->layerID << endl;
+#endif
 			 id++;
 		}
+
+/*Inserido por Alberto 15/01/09: alteração no mecanismo de perdas e valores iniciais para Bwmax e Bweq*/
+		ALMTF_SetBw(RatesCum[0]);
 	}
+#ifdef CTRL_PPS
+	if (pthread_create(&(IDthreadpps), NULL, core_ctrl_packets, (void *)NULL) != 0) {
+			cerr << "Error Creating Thread: PPS " << endl;
+	}
+#endif
 	// inicia sem estar registrado em nenhuma camada
 	CurrentLayer = -1;
 #ifdef _LOG_SPEED_AND_PACKETS
@@ -179,6 +204,7 @@ bool core_readConfigs()
 
 void core_addLayer()
 {
+	int erro;
 	stringstream sslist("");
 	if (CurrentLayer < TotalLayers-1) { 
 		// cria a thread e habilita a execução dela
@@ -186,14 +212,10 @@ void core_addLayer()
 		if (!layer->thread_enabled) {
 			// cria a thread esperando os pacotes
 			layer->thread_enabled = true;
+            pthread_cond_signal(&(layer->cond));
+			//cout << "habilitando threads da camada " << layer->layerID << endl;;
 			// thread que recebe os pacotes e armazena em uma lista
-#ifdef _WIN32_
-			layer->haRecvThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)core_recvThread, (LPVOID)layer, 0, &(layer->dwRecvThread));
-#else
-			if (pthread_create(&(layer->IDthread), NULL, core_recvThread, (void *)layer) != 0) {
-				cerr << "Error Creating Thread: core_recvThread!" << endl;
-			}
-#endif
+
 			CurrentLayer++;
 			sslist << "-------------------------------------------------------"<<endl;
 			sslist << "Cadastrou na camada "<<CurrentLayer<<" ("<<layer->speed<<" kbits/s)!";
@@ -227,8 +249,10 @@ void core_leaveLayer()
 			sslist << "0";
 		sslist <<" kbits/s"<<endl;
 		sslist << "-------------------------------------------------------"<<endl;
-	} else 
-		sslist << "Receptor: não é possível deixar a camada "<<CurrentLayer<<endl;
+	} else{
+				sslist << "Receptor: não é possível deixar a camada "<<CurrentLayer<<endl;
+				//cout << "Receptor: não é possível deixar a camada "<<CurrentLayer<<endl;
+			}
 	recv_printlist.push_back(sslist.str());
 }
 
@@ -291,7 +315,11 @@ void *core_logSaveResultsThread(void *)
 			break;
 		}
 	}
+#ifdef _WIN32_
 	return (NULL);
+#else 
+	pthread_exit(NULL);
+#endif
 }
 
 void core_logSaveResults()
@@ -368,7 +396,8 @@ void core_logSaveResults()
 	ofs_logCoreStatus<<"  Total de Pacotes Perdidos..: "<<totLoss<<endl;
 	percentLoss=0.0;
 	if (totPackets > 0) 
-		percentLoss = ((double)totLoss/(double)totPackets)*100;
+		percentLoss = 100*((double)totLoss/((double)totPackets+(double)totLoss));
+		//percentLoss = ((double)totLoss/(double)totPackets)*100;
 	ofs_logCoreStatus<<"  Percentual de Perdas.......: "<<percentLoss<<"%"<<endl;
 	ofs_logCoreStatus<<"|----------------------------------------|"<<endl;
 	ofs_logCoreStatus.flush();
@@ -383,66 +412,127 @@ void *core_recvPacket(void *layerc)
 {
 	ALMTFRecLayer *layer = (ALMTFRecLayer *)layerc;
 	ALMTFRecvdPacket *item;
-	while (layer->thread_enabled) {
-		if (!layer->PktList.empty()) {			
-			item = layer->PktList.front();
-			layer->PktList.pop_front();
-			// chama a função do ALMTF para processar o pacote recebido
-			ALMTF_recvPkt(layer, item->pkt, &(item->timepkt));
-			free(item->pkt);
-			free(item);
+	while (1) {
+		if(layer->thread_running){
+			while(layer->thread_running){
+				if (!layer->PktList.empty()) {			
+					item = layer->PktList.front();
+					layer->PktList.pop_front();
+					// chama a função do ALMTF para processar o pacote recebido
+						ALMTF_recvPkt(layer, item->pkt, &(item->timepkt));
+					free(item->pkt);
+					free(item);
+				}
+				usleep(1000);
+			}
 		}
-		usleep(1000);
+		usleep(500);
 	}
-	return(NULL);
+#ifdef _WIN32_
+	return (NULL);
+#else 
+	pthread_exit(NULL);
+#endif
 }
 #endif
+
+void* core_ctrl_packets(void*){
+	struct timeval tm_now, tm_ant;
+	time_getus(&tm_now);
+	tm_ant = tm_now;
+    tm_ant.tv_sec += 1;
+    ofstream ofs_lognumPkt;
+    ofs_lognumPkt.open("LOG_PPS.txt");
+	char a[20];
+    int num = 0, ant = 0;
+	double bpp = 0.0;
+    ofs_lognumPkt << "tempo\t" << "banda kbits/s" << endl;
+	while(1){
+		if((tm_now.tv_sec > tm_ant.tv_sec) || ((tm_now.tv_sec == tm_ant.tv_sec) && (tm_now.tv_usec > tm_ant.tv_usec))){
+           num = get_numPackets();
+		   bpp = (num - ant)*8*(ALMTF_PACKETSIZE+sizeof(hdr_almtf)+46)*0.001;
+           ofs_lognumPkt << fixed << setprecision(3) << right << setw(6) << tm_now.tv_sec << "\t" << setw(10) << bpp << endl;
+           ant = num;
+           tm_ant = tm_now;
+    	   tm_ant.tv_sec += 1;
+        }
+        usleep(100000);
+		time_getus(&tm_now);
+    }
+	ofs_lognumPkt.close();
+}
+int get_numPackets(){
+    int num = 0;
+	pthread_mutex_lock(&mutex_pps);
+	num = num_tot_packets;
+	pthread_mutex_unlock(&mutex_pps);
+    return num;
+}
+void set_numPackets(){
+	pthread_mutex_lock(&mutex_pps);
+    num_tot_packets++;
+	pthread_mutex_unlock(&mutex_pps);
+}
 
 void *core_recvThread(void *layerc)
 {
 	ALMTFRecLayer *layer = (ALMTFRecLayer *)layerc;
-	layer->thread_running = true;	
-	time_getus(&layer->start_time);
-	stringstream sslist("");
-	// cria a conexão multicast com o grupo
-	sock_recv_MCastCon(&layer->sock, (char *)layer->IP, (unsigned int)layer->port, &(layer->sock_mreq));
-	char *cbuff = new char[sizeof(transm_packet)];
-	struct timeval tv_recvTime;
-	// thread que pega os pacotes da lista e faz o processamento
+	//cout << "Thread da camada " << layer->layerID << " em execucao"<< endl;
 #ifdef _PACKETS_BUFFER
-	if (pthread_create(&(layer->ptProcThread), NULL, core_recvPacket, (void *)layer) != 0) {
-		cerr << "Error Creating Thread: core_recvPacket!" << endl;	
-	}		
+		if (pthread_create(&(layer->ptProcThread), NULL, core_recvPacket, (void *)layer) != 0) {
+			cerr << "Error Creating Thread: core_recvPacket!" << endl;	
+		}
+		//else cout << "criou thread de recepcao da camada " << layer->layerID << endl;
 #endif
-	while (layer->thread_enabled) {
-		sock_recvMsgRecv(&layer->sock, cbuff, sizeof(transm_packet), layer->port, &ServerIP);
-		time_getus(&tv_recvTime);
-		TimeLastPkt = tv_recvTime;
-		if (layer->layerID == 0)
-			TimeLastPktLayerZero = tv_recvTime;
-		transm_packet *tpkt = new transm_packet[sizeof(transm_packet)]; 
-		memmove(tpkt, cbuff, sizeof(transm_packet));
+		// thread que pega os pacotes da lista e faz o processamento
+
+	while(1){
+		pthread_mutex_lock(&(layer->mutex));
+        pthread_cond_wait(&(layer->cond), &(layer->mutex));
+			layer->thread_running = true;	
+			time_getus(&layer->start_time);
+			stringstream sslist("");
+			// cria a conexão multicast com o grupo
+			sock_recv_MCastCon(&layer->sock, (char *)layer->IP, (unsigned int)layer->port, &(layer->sock_mreq));
+			char *cbuff = new char[sizeof(transm_packet)];
+			struct timeval tv_recvTime;
+			while (layer->thread_enabled) {
+				sock_recvMsgRecv(&layer->sock, cbuff, sizeof(transm_packet), layer->port, &ServerIP);
+				time_getus(&tv_recvTime);
+				core_setLastPktTime(&tv_recvTime);
+				/*if (layer->layerID == 0)  -- TODO -- teste: retirado timeout calculado apenas na camada 0
+					TimeLastPktLayerZero = tv_recvTime;*/
+				transm_packet *tpkt = new transm_packet[sizeof(transm_packet)]; 
+				memmove(tpkt, cbuff, sizeof(transm_packet));
+                set_numPackets();
 #ifndef _PACKETS_BUFFER
-		layer->num_packets++;
-		ALMTF_recvPkt(layer, tpkt, &tv_recvTime);
-		delete(tpkt);
+				layer->num_packets++;
+				ALMTF_recvPkt(layer, tpkt, &tv_recvTime);
+				delete(tpkt);
 #else
-		ALMTFRecvdPacket* item = new ALMTFRecvdPacket[sizeof(ALMTFRecvdPacket)];
-		item->pkt = tpkt;
-		item->timepkt = tv_recvTime;
-		layer->PktList.push_back(item);
-		layer->num_packets++;
+				ALMTFRecvdPacket* item = new ALMTFRecvdPacket[sizeof(ALMTFRecvdPacket)];
+				item->pkt = tpkt;
+				item->timepkt = tv_recvTime;
+				layer->PktList.push_back(item);
+				layer->num_packets++;
 #endif
+			}
+			sock_recv_MCastLeaveGroup(&layer->sock, &(layer->sock_mreq));
+			sock_close(&layer->sock);
+			delete(cbuff);
+			// informa que a camada não está mais em execução
+			layer->thread_running = false;
+			sslist.str()="";
+			sslist << "Layer "<<layer->layerID<<": [encerrou execucao]"<<endl;
+			recv_printlist.push_back(sslist.str());
+		pthread_mutex_unlock(&(layer->mutex));
+		usleep(1000);
 	}
-	sock_recv_MCastLeaveGroup(&layer->sock, &(layer->sock_mreq));
-	sock_close(&layer->sock);
-	delete(cbuff);
-	// informa que a camada não está mais em execução
-	layer->thread_running = false;
-	sslist.str()="";
-	sslist << "Layer "<<layer->layerID<<": [encerrou execucao]"<<endl;
-	recv_printlist.push_back(sslist.str());
+#ifdef _WIN32_
 	return (NULL);
+#else 
+	pthread_exit(NULL);
+#endif
 }
 
 void core_sendPacket(transm_packet *pkt)
@@ -494,11 +584,19 @@ int core_getTotalLayers()
 {
 	return TotalLayers;
 }
-
+void core_setLastPktTime(struct timeval *t)
+{
+	pthread_mutex_lock(&TimeLastPkt_mutex);
+		TimeLastPkt.tv_sec = t->tv_sec;
+		TimeLastPkt.tv_usec = t->tv_usec;
+	pthread_mutex_unlock(&TimeLastPkt_mutex);
+}
 void core_getLastPktTime(struct timeval *t)
 {
-	t->tv_sec = TimeLastPkt.tv_sec;
-	t->tv_usec = TimeLastPkt.tv_usec;
+	pthread_mutex_lock(&TimeLastPkt_mutex);
+		t->tv_sec = TimeLastPkt.tv_sec;
+		t->tv_usec = TimeLastPkt.tv_usec;
+	pthread_mutex_unlock(&TimeLastPkt_mutex);
 }
 
 void core_getLastPktTimeLayerZero(struct timeval *t)
@@ -524,7 +622,11 @@ void *core_printThread(void *lc)
 		}
 		usleep(5000);
 	}
-	return(NULL);
+#ifdef _WIN32_
+	return (NULL);
+#else 
+	pthread_exit(NULL);
+#endif
 }
 
 void core_sendPrintList(string s)
