@@ -1,0 +1,1 @@
+Implementation of learning mechanisms in the ALMTF (Adaptive Layered Multicast TCP Friendly) code.
